@@ -18,6 +18,7 @@ from app import (
     next_session_date,
     get_prior_trading_day,
     resolve_session_clock,
+    should_preview_next_session,
     get_structure_projection_time,
     rth_session_window_label,
 )
@@ -151,6 +152,33 @@ def test_session_date_defaults_to_monday_on_weekend() -> None:
     assert next_session_date(saturday.date()) == date(2026, 5, 4)
     assert next_session_after(date(2026, 5, 1)) == date(2026, 5, 4)
     assert default_session_date(df, saturday) == date(2026, 5, 4)
+
+
+def test_session_date_rolls_to_next_day_after_five_pm() -> None:
+    df = _sample_day_frame("2026-05-04")
+    before_cutoff = datetime(2026, 5, 4, 16, 59, tzinfo=get_central_tz())
+    after_cutoff = datetime(2026, 5, 4, 17, 0, tzinfo=get_central_tz())
+
+    assert should_preview_next_session(before_cutoff, df) is False
+    assert default_session_date(df, before_cutoff) == date(2026, 5, 4)
+    assert should_preview_next_session(after_cutoff, df) is True
+    assert default_session_date(df, after_cutoff) == date(2026, 5, 5)
+
+
+def test_friday_after_five_pm_defaults_to_monday_plan() -> None:
+    df = _sample_day_frame("2026-05-01")
+    friday_evening = datetime(2026, 5, 1, 17, 0, tzinfo=get_central_tz())
+
+    assert should_preview_next_session(friday_evening, df) is True
+    assert default_session_date(df, friday_evening) == date(2026, 5, 4)
+
+
+def test_after_five_pm_rollover_does_not_require_same_day_feed_data() -> None:
+    stale_df = _sample_day_frame("2026-05-01")
+    monday_evening = datetime(2026, 5, 4, 17, 0, tzinfo=get_central_tz())
+
+    assert should_preview_next_session(monday_evening, stale_df) is True
+    assert default_session_date(stale_df, monday_evening) == date(2026, 5, 5)
 
 
 def test_future_session_clock_uses_nine_am_preview() -> None:

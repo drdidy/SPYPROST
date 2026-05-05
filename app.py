@@ -42,6 +42,7 @@ RTH_SESSION_START = time(8, 30)
 RTH_SESSION_END = time(15, 0)
 PROJECTION_SESSION_START = time(3, 0)
 PROJECTION_SESSION_END = time(18, 0)
+NEXT_SESSION_PREVIEW_START = time(17, 0)
 NEWS_RSS_FEEDS = (
     ("Yahoo Finance SPY", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US"),
     ("Yahoo Finance VIX", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EVIX&region=US&lang=en-US"),
@@ -2591,10 +2592,22 @@ def next_session_after(day_value) -> date:
     return next_weekday(day)
 
 
+def should_preview_next_session(current_dt: datetime | pd.Timestamp, df: pd.DataFrame | None = None) -> bool:
+    ct = get_central_tz()
+    now = pd.Timestamp(current_dt)
+    now = now.tz_localize(ct) if now.tzinfo is None else now.tz_convert(ct)
+    if now.weekday() >= 5:
+        return True
+    return now.time() >= NEXT_SESSION_PREVIEW_START
+
+
 def default_session_date(df: pd.DataFrame, current_dt: datetime) -> date:
-    current_day = pd.Timestamp(current_dt).date()
-    if current_day.weekday() >= 5:
-        return next_session_date(current_day)
+    ct = get_central_tz()
+    now = pd.Timestamp(current_dt)
+    now = now.tz_localize(ct) if now.tzinfo is None else now.tz_convert(ct)
+    current_day = now.date()
+    if should_preview_next_session(now, df):
+        return next_session_after(current_day) if current_day.weekday() < 5 else next_session_date(current_day)
     available = get_available_trading_days(df)
     if current_day in available or not available:
         return current_day
@@ -8554,6 +8567,8 @@ def main() -> None:
     st.sidebar.caption(f"Actual CT: {real_now_ct.strftime('%H:%M:%S %Z')}")
     st.sidebar.caption(f"Session clock: {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")
     st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
+    if should_preview_next_session(real_now_ct, df) and selected_session_day > real_now_ct.date():
+        st.sidebar.caption("Next-session plan: active after 5:00 PM CT.")
     if not session_has_candles:
         st.sidebar.caption("Preview mode: session candles pending.")
     elif not is_live_session:
@@ -8647,7 +8662,7 @@ def main() -> None:
 
     with tabs["Live"]:
         if not session_has_candles:
-            render_data_notice(f"Preview mode for {selected_session_day}. Structure is projected from completed market data; live entries and option contracts remain unavailable until that session prints candles.", tone="warn")
+            render_data_notice(f"Next-session plan for {selected_session_day}. Structure is projected from the latest completed market data; live entries and option contracts remain unavailable until that session prints candles.", tone="warn")
         elif not is_live_session:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
         render_terminal_hero(
