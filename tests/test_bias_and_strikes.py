@@ -72,7 +72,7 @@ def test_bearish_preopen() -> None:
 def test_regular_session_mode() -> None:
     b = determine_preopen_bias(_lines(), 101.0, _ts("2026-04-29T09:00:00"))
     assert b.bias == "REGULAR_SESSION"
-    assert "line-side confirmation" in b.explanation.lower()
+    assert "clean hold" in b.explanation.lower()
 
 
 def test_missing_ua_or_ud() -> None:

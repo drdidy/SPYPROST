@@ -2991,13 +2991,13 @@ def determine_preopen_bias(lines: list[DynamicLine], current_price: float, curre
 
     if current_price > top:
         bias = "BULLISH" if preopen else "REGULAR_SESSION"
-        expl = "Price is above upper structure. Buy setups require touch from above and close above the active line." if preopen else "Regular session posture: above upper structure; line-side confirmation remains active."
+        expl = "SPY is above upper structure. A touch from above with a close back above the active line supports calls." if preopen else "SPY is above upper structure. Calls need a clean hold above the tested line; puts need a failed reclaim from below."
     elif bot <= current_price <= top:
         bias = "NEUTRAL" if preopen else "REGULAR_SESSION"
-        expl = "Price is inside the upper channel; buy or sell depends on which side of the touched line closes." if preopen else "Regular session posture: price remains in upper channel; line-side confirmation remains active."
+        expl = "SPY is inside the upper channel. Direction comes from the close: above the touched line favors calls; below it favors puts." if preopen else "SPY is inside the upper channel. Wait for price to test a trigger and close on the correct side before choosing direction."
     else:
         bias = "BEARISH" if preopen else "REGULAR_SESSION"
-        expl = "Price is below upper structure. Sell setups require touch from below and close below the active line." if preopen else "Regular session posture: below upper channel; line-side confirmation remains active."
+        expl = "SPY is below upper structure. A touch from below with a close back below the active line supports puts." if preopen else "SPY is below upper structure. Puts need a clean rejection below the tested line; calls need a reclaim and hold above it."
 
     score = calculate_bias_strength(current_price, ua_v, ud_v, bias)
     return BiasState(bias, current_price, now, watched_call, watched_put, primary, tp, score, expl, ua_v, ud_v, la_v, ld_v)
@@ -3165,6 +3165,40 @@ def premium_flow_alignment(options_intel: OptionsIntelligence | None, watch_side
     if reason_text:
         copy = f"{copy} {reason_text}."
     return {"state": state, "title": title, "copy": copy, **read}
+
+
+def flow_brief_copy(flow_alignment: dict) -> str:
+    state = str(flow_alignment.get("state") or "").lower()
+    side = str(flow_alignment.get("side") or "").upper()
+    reasons = [str(item) for item in flow_alignment.get("reasons") or [] if item]
+    reason_text = "; ".join(reasons[:3])
+    if state == "aligned":
+        base = "Order flow supports the watched setup. Confirmation at the structure line is still required."
+    elif state == "opposes":
+        base = "Order flow conflicts with the watched setup. Require a stronger rejection or pass."
+    elif side == "MIXED":
+        base = "Order flow is mixed. Treat it as context, not a standalone signal."
+    elif side in {"CALL", "PUT"}:
+        base = f"Order flow leans {display_state_label(side).lower()}. Use it only after structure confirms."
+    else:
+        base = "Order-flow context is pending. Structure confirmation remains primary."
+    return f"{base} Evidence: {reason_text}." if reason_text else base
+
+
+def flow_side_label(flow_alignment: dict) -> str:
+    side = str(flow_alignment.get("side") or "").upper()
+    if side == "MIXED":
+        return "Mixed"
+    if side in {"CALL", "PUT"}:
+        return display_state_label(side)
+    return "Pending"
+
+
+def flow_tide_label(flow_alignment: dict) -> str:
+    tide = str(flow_alignment.get("tide") or "").strip()
+    if not tide:
+        return "Pending"
+    return display_state_label(tide)
 
 
 def alignment_state_for_side(direction: str | None, watch_side: str | None) -> str:
@@ -4279,15 +4313,24 @@ def inject_global_css() -> None:
     .strike-label{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
     .strike-value{font-family:var(--mono-font);font-size:1.45rem;font-weight:850;color:var(--text);line-height:1.05;margin-top:4px}
     .terminal-section{margin-top:14px}
-    .command-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
+    .command-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
     .terminal-panel,.prophet-header,.metric-card,.prophet-card,.empty-state,.warning-panel{border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:none}
     .empty-state,.warning-panel{padding:16px;color:var(--text);line-height:1.45;margin:10px 0}
     .empty-state b,.warning-panel b{display:block;margin-bottom:4px}
     .terminal-panel{padding:16px;min-height:184px;display:flex;flex-direction:column;gap:10px}
-    .panel-head{min-width:0}
+    .panel-head{min-width:0;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
     .panel-head>div{min-width:0}
     .panel-title{font-size:1.05rem;font-weight:800;color:var(--text);margin-top:4px;line-height:1.22;overflow-wrap:anywhere}
-    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:0;flex:1;overflow-wrap:anywhere}
+    .panel-copy{color:var(--muted);font-size:.88rem;line-height:1.45;margin-top:0;overflow-wrap:anywhere}
+    .panel-copy.primary{color:#dbe8f5;font-size:.92rem}
+    .decision-evidence{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:auto}
+    .decision-row{border:1px solid rgba(141,160,184,.16);border-radius:8px;background:rgba(255,255,255,.03);padding:9px;min-height:62px}
+    .decision-row-label{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);line-height:1.15}
+    .decision-row-value{font-size:.9rem;font-weight:820;color:var(--text);line-height:1.25;margin-top:5px;overflow-wrap:anywhere}
+    .decision-row.green{border-color:rgba(46,204,113,.34)} .decision-row.green .decision-row-value{color:var(--green)}
+    .decision-row.red{border-color:rgba(255,95,124,.34)} .decision-row.red .decision-row-value{color:var(--red)}
+    .decision-row.amber{border-color:rgba(244,199,107,.34)} .decision-row.amber .decision-row-value{color:var(--amber)}
+    .decision-row.blue{border-color:rgba(103,183,255,.34)} .decision-row.blue .decision-row-value{color:var(--blue)}
     .data-notice{border:1px solid rgba(78,168,222,.28);border-radius:8px;background:rgba(78,168,222,.08);padding:11px 13px;color:#b9dcfb;font-size:.9rem;margin:10px 0}
     .data-notice.warn{border-color:rgba(245,196,81,.34);background:rgba(245,196,81,.08);color:#f8dfa0}
     .option-quote-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 8px}
@@ -4565,7 +4608,8 @@ def inject_global_css() -> None:
     .terminal-panel:hover,.structure-tile:hover,.brief-card:hover,.morning-line-card:hover,.morning-card:hover,.flow-card:hover,.evidence-card:hover,.daily-guide-card:hover,.option-quote-cell:hover{border-color:rgba(103,183,255,.42);background-color:rgba(255,255,255,.05);box-shadow:0 12px 28px rgba(0,0,0,.18)}
     .card-title,.card-value,.small-muted,.panel-title,.panel-copy,.tile-name,.tile-value,.tile-meta,.brief-label,.brief-value,.brief-copy,.replay-title,.replay-copy,.prob-label,.prob-value,.news-title,.news-summary,.calendar-event,.calendar-notes,.source-name,.source-state,.source-detail,.morning-title,.morning-subtitle,.morning-stat-label,.morning-stat-value,.morning-stat-copy,.morning-line-role,.morning-line-value,.morning-line-anchor,.morning-card-title,.morning-card-value,.morning-card-copy,.scenario-title,.scenario-price,.scenario-state,.scenario-list span,.decision-main,.decision-reason,.action-headline,.action-summary,.action-ticket-value,.action-ticket-copy,.flow-read-value,.flow-read-copy,.flow-value,.flow-copy,.flow-means,.flow-level,.ai-verify-value,.ai-verify-note,.evidence-value,.evidence-detail,.source-row-name,.source-row-meta,.daily-guide-title,.daily-guide-copy,.daily-guide-value,.daily-guide-note,.daily-guide-card-value,.daily-guide-card-copy,.daily-guide-row-copy,.option-quote-value,.option-quote-mark,.option-quote-strike{min-width:0;max-width:100%;overflow-wrap:anywhere}
     .hero-grid{grid-template-columns:minmax(280px,1fr) minmax(360px,1.35fr) minmax(260px,.85fr)}
-    .command-grid,.morning-dashboard,.flow-board-grid,.ai-verify-grid{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+    .command-grid{grid-template-columns:repeat(2,minmax(300px,1fr))}
+    .morning-dashboard,.flow-board-grid,.ai-verify-grid{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
     .structure-grid,.brief-grid,.source-grid,.briefing-mini-grid,.evidence-grid,.scout-grid,.citation-grid,.upgrade-grid,.daily-guide-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
     .morning-lines{grid-template-columns:repeat(auto-fit,minmax(235px,1fr))}
     .decision-stack-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
@@ -4592,7 +4636,7 @@ def inject_global_css() -> None:
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
     @keyframes brandScan{0%,100%{transform:translateY(-5px);opacity:.18}50%{transform:translateY(5px);opacity:.78}}
-    @media (max-width: 680px){div[data-baseweb="tab-list"]{scroll-snap-type:x proximity;justify-content:flex-start;gap:6px;padding:6px}div[data-baseweb="tab-list"] button[role="tab"]{flex:0 0 128px;min-width:128px;padding:10px 12px}div[data-baseweb="tab-list"] button[role="tab"] p{font-size:.8rem}.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid,.morning-lines,.morning-hero-metrics{grid-template-columns:1fr}.morning-title{font-size:1.55rem}.morning-orb{width:150px}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.brand-logo{width:74px;height:74px}.status-strip{grid-template-columns:1fr}.strike-grid,.hero-intel,.daily-guide-status{grid-template-columns:1fr}}
+    @media (max-width: 680px){div[data-baseweb="tab-list"]{scroll-snap-type:x proximity;justify-content:flex-start;gap:6px;padding:6px}div[data-baseweb="tab-list"] button[role="tab"]{flex:0 0 128px;min-width:128px;padding:10px 12px}div[data-baseweb="tab-list"] button[role="tab"] p{font-size:.8rem}.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid,.morning-lines,.morning-hero-metrics,.decision-evidence{grid-template-columns:1fr}.morning-title{font-size:1.55rem}.morning-orb{width:150px}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.brand-logo{width:74px;height:74px}.status-strip{grid-template-columns:1fr}.strike-grid,.hero-intel,.daily-guide-status{grid-template-columns:1fr}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -4788,8 +4832,35 @@ def display_line_list(names: list[str] | tuple[str, ...] | None) -> str:
     return ", ".join(display_line_name(name) for name in names or []) or "-"
 
 
+def compact_line_name(name: str | None) -> str:
+    if not name:
+        return "Pending"
+    labels = {
+        "UA": "Upper Ascending",
+        "UD": "Upper Descending",
+        "LA": "Lower Ascending",
+        "LD": "Lower Descending",
+    }
+    normalized = str(name).strip().upper().replace(" ", "_")
+    return labels.get(normalized, display_line_name(name))
+
+
 def _pill(label: str, value: str | None, tone: str | None = None) -> str:
     return f"<span class='pill {tone or _tone_for_text(value)}'>{label}: {value or '-'}</span>"
+
+
+def _decision_row(label: str, value: str | None, tone: str | None = None) -> str:
+    display_value = str(value or "Pending").strip() or "Pending"
+    return (
+        f"<div class='decision-row {tone or _tone_for_text(display_value)}'>"
+        f"<div class='decision-row-label'>{escape(label)}</div>"
+        f"<div class='decision-row-value'>{escape(display_value)}</div>"
+        "</div>"
+    )
+
+
+def _decision_rows(items: list[tuple[str, str | None, str | None]]) -> str:
+    return "<div class='decision-evidence'>" + "".join(_decision_row(label, value, tone) for label, value, tone in items) + "</div>"
 
 
 def ui_icon(name: str, tone: str = "blue", size: str = "md") -> str:
@@ -4867,16 +4938,52 @@ def market_read_copy(bias_state) -> str:
     return bias_state.explanation
 
 
+def structure_mode_label(bias_state) -> str:
+    if not bias_state:
+        return "Pending"
+    if bias_state.bias == "REGULAR_SESSION":
+        return "Confirmation only"
+    if bias_state.bias == "NEUTRAL":
+        return "Two-sided"
+    if bias_state.bias == "BULLISH":
+        return "Call watch"
+    if bias_state.bias == "BEARISH":
+        return "Put watch"
+    return display_state_label(bias_state.bias)
+
+
+def setup_action_value(latest_signal, quality) -> str:
+    if latest_signal is None:
+        return "Wait"
+    if quality is None:
+        return "Confirm"
+    label = display_state_label(quality_label(quality))
+    return "Wait" if label == "-" else label
+
+
+def setup_score_value(quality) -> str:
+    if quality is None or quality.score is None or pd.isna(quality.score):
+        return "Pending"
+    return f"{float(quality.score):.0f}/100"
+
+
+def setup_retest_value(guardrail) -> str:
+    if guardrail is None:
+        return "Pending"
+    value = display_state_label(guardrail.retest_status)
+    return "Pending" if value == "-" else value
+
+
 def signal_setup_label(signal) -> str:
     if signal is None:
-        return "No active setup"
+        return "Waiting for confirmation"
     status = "forming" if signal.status == "PENDING_CONFIRMATION" else "confirmed"
     return f"{signal.signal_type} setup {status}"
 
 
 def signal_setup_copy(signal) -> str:
     if signal is None:
-        return "No hourly rejection confirmed at a trade trigger."
+        return "No trigger rejection has confirmed yet. Wait for price to test a structure line, reject it, and close on the correct side before selecting a contract."
     level = display_line_name(signal.line_name)
     if signal.status == "PENDING_CONFIRMATION":
         return f"Price rejected {level}. No trade yet; wait for the next hourly candle open. Stop {fmt_price(signal.stop_price)}. Target {display_line_name(signal.target_line_name)} {fmt_price(signal.target_price)}."
@@ -5204,6 +5311,19 @@ def darkpool_context_label(
     }
 
 
+def darkpool_brief_copy(darkpool_alignment: dict) -> str:
+    value = str(darkpool_alignment.get("value") or "").strip()
+    if not value or value == "-":
+        return "Dark-pool levels are pending for this session."
+    state = str(darkpool_alignment.get("state") or "").lower()
+    title = str(darkpool_alignment.get("title") or "Dark-pool level").strip()
+    if state == "aligned":
+        return f"{title}: {value}. Treat it as useful only after price confirms at the structure line."
+    if state == "opposes":
+        return f"{title}: {value}. This can create chop unless the rejection is clean."
+    return f"Largest dark-pool level: {value}. Use it as context, not as an entry by itself."
+
+
 def render_live_command_center(
     bias_state,
     decision_state,
@@ -5215,9 +5335,6 @@ def render_live_command_center(
 ) -> None:
     quality = decision_state.signal_quality if decision_state else None
     guardrail = decision_state.guardrail_state if decision_state else None
-    watch_lines = []
-    if bias_state:
-        watch_lines = bias_state.watched_call_lines + bias_state.watched_put_lines
     signal_body = signal_setup_copy(latest_signal)
     signal_title = signal_setup_label(latest_signal)
     options_market_data = bool(options_state and provider_is_allowed_option_data(options_state.provider) and (quote_has_live_market_data(options_state.call_quote) or quote_has_live_market_data(options_state.put_quote)))
@@ -5230,11 +5347,14 @@ def render_live_command_center(
         f"target {display_line_name(projection.target_line_name)} {fmt_price(projection.target_line_value)}."
         if projection else "Premium projection pending."
     )
-    options_copy = (
-        f"CALL mark {call_mark}. PUT mark {put_mark}. {projection_text}"
-        if options_market_data
-        else "Live quote feed pending. Delayed prices appear when available."
-    )
+    raw_contract_title = format_watch_contract(selected_strikes, latest_signal, bias_state)
+    contract_title = raw_contract_title if raw_contract_title and raw_contract_title != "-" else "Contract pending"
+    if options_market_data:
+        options_copy = f"Call mark {call_mark}. Put mark {put_mark}. {projection_text}"
+    elif selected_strikes:
+        options_copy = "Quote feed is pending. Mark, bid/ask, spread, and delta appear when live or delayed chain data is available."
+    else:
+        options_copy = "A contract appears after a confirmed setup and a valid option-chain quote is available."
     provider_text = option_provider_label(options_state, {}) if options_state else "Live quotes inactive"
     direction_tone = _tone_for_text(bias_state.bias if bias_state else "WAIT")
     setup_tone = _tone_for_text(signal_title)
@@ -5256,6 +5376,31 @@ def render_live_command_center(
         entry_price = latest_signal.entry_price
         entry_label = display_line_name(latest_signal.line_name)
     darkpool_alignment = darkpool_context_label(options_intel, latest_price, entry_price, watch_side, entry_label)
+    quote_status = "Tastytrade live" if options_live else "Waiting for chain"
+    direction_rows = _decision_rows([
+        ("Mode", structure_mode_label(bias_state), direction_tone),
+        ("Nearest trigger", compact_line_name(bias_state.primary_line if bias_state else None), "blue"),
+        ("SPY", fmt_price(latest_price), None),
+    ])
+    setup_rows = _decision_rows([
+        ("Action", setup_action_value(latest_signal, quality), setup_tone),
+        ("Quality", setup_score_value(quality), None),
+        ("Retest", setup_retest_value(guardrail), None),
+    ])
+    flow_rows = _decision_rows([
+        ("Pressure", flow_side_label(flow_alignment), flow_tone),
+        ("Tide", flow_tide_label(flow_alignment), None),
+        ("Dark pool", darkpool_alignment.get("value") or "Pending", "blue"),
+    ])
+    option_rows = _decision_rows([
+        ("Expiry", selected_strikes.dte_label if selected_strikes else "Pending", None),
+        ("Quote", quote_status, options_tone),
+        ("Source", provider_text if options_state else "Pending", None),
+    ])
+    darkpool_copy = darkpool_brief_copy(darkpool_alignment)
+    flow_copy = flow_brief_copy(flow_alignment)
+    if darkpool_copy:
+        flow_copy = f"{flow_copy} {darkpool_copy}"
 
     st.markdown(
         f"""
@@ -5263,32 +5408,24 @@ def render_live_command_center(
           <div class='terminal-panel'>
             <div class='panel-head'>
               <div>
-                <div class='panel-label'>Direction</div>
-                <div class='panel-title'>{market_read_label(bias_state)}</div>
+                <div class='panel-label'>Structure Read</div>
+                <div class='panel-title'>{escape(market_read_label(bias_state))}</div>
               </div>
               {ui_icon('compass', direction_tone, 'md')}
             </div>
-            <div class='panel-copy'>{market_read_copy(bias_state)}</div>
-            <div class='pill-row'>
-              {_pill('Confidence', fmt_float(bias_state.strength_score) if bias_state else '-')}
-              {_pill('Triggers', display_line_list(watch_lines))}
-              {_pill('Price', fmt_price(latest_price))}
-            </div>
+            <div class='panel-copy primary'>{escape(market_read_copy(bias_state))}</div>
+            {direction_rows}
           </div>
           <div class='terminal-panel'>
             <div class='panel-head'>
               <div>
-                <div class='panel-label'>Setup</div>
-                <div class='panel-title'>{signal_title}</div>
+                <div class='panel-label'>Trade Setup</div>
+                <div class='panel-title'>{escape(signal_title)}</div>
               </div>
               {ui_icon('bolt', setup_tone, 'md')}
             </div>
-            <div class='panel-copy'>{signal_body}</div>
-            <div class='pill-row'>
-              {_pill('Action', display_state_label(quality_label(quality)))}
-              {_pill('Score', fmt_float(quality.score) if quality else '-')}
-              {_pill('Retest', display_state_label(guardrail.retest_status) if guardrail else '-')}
-            </div>
+            <div class='panel-copy primary'>{escape(signal_body)}</div>
+            {setup_rows}
           </div>
           <div class='terminal-panel'>
             <div class='panel-head'>
@@ -5298,27 +5435,19 @@ def render_live_command_center(
               </div>
               {ui_icon('pulse', flow_tone, 'md')}
             </div>
-            <div class='panel-copy'>{escape(str(flow_alignment.get('copy') or 'Flow context is pending. Structure confirmation remains primary.'))}</div>
-            <div class='pill-row'>
-              {_pill('Side', display_state_label(flow_alignment.get('side') or 'Neutral'))}
-              {_pill('Tide', display_state_label(flow_alignment.get('tide') or '-'))}
-              {_pill('Dark pool', darkpool_alignment.get('value') or '-')}
-            </div>
-            <div class='panel-copy' style='margin-top:8px'>{escape(str(darkpool_alignment.get('copy') or ''))}</div>
+            <div class='panel-copy primary'>{escape(flow_copy)}</div>
+            {flow_rows}
           </div>
           <div class='terminal-panel'>
             <div class='panel-head'>
               <div>
-                <div class='panel-label'>Options Data</div>
-                <div class='panel-title'>{format_watch_contract(selected_strikes, latest_signal, bias_state)}</div>
+                <div class='panel-label'>Contract Watch</div>
+                <div class='panel-title'>{escape(contract_title)}</div>
               </div>
               {ui_icon('shield', options_tone, 'md')}
             </div>
-            <div class='panel-copy'>{options_copy}</div>
-            <div class='pill-row'>
-              {_pill('DTE', selected_strikes.dte_label if selected_strikes else '-')}
-              {_pill('Data', display_state_label(provider_text))}
-            </div>
+            <div class='panel-copy primary'>{escape(options_copy)}</div>
+            {option_rows}
           </div>
         </div>
         """,
