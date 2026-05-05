@@ -244,6 +244,7 @@ def test_prompt_carries_truthful_source_statuses() -> None:
     assert "GEX_API_URL is not configured" in prompt
     assert "CPI" in prompt
     assert "Upper Descending Trigger" in prompt
+    assert "entry_eligible" in prompt
 
 
 def test_rule_based_briefing_marks_unavailable_premium_feeds() -> None:
@@ -325,18 +326,19 @@ def test_daily_brief_put_plan_separates_opening_pivot_from_put_entry() -> None:
     )
 
     context = build_daily_brief_context(bundle, result)
+    decision = morning_decision_from_result(result, bundle)
     svg = render_daily_brief_svg(bundle, result)
 
-    assert context["primary_value"] == "722.47"
-    assert context["entry_value"] == "727.87"
-    assert context["upper_value"] == "727.87"
-    assert context["contract_value"] == "PUT 725 / PUT 720"
-    assert context["entry_a_contract"] == "PUT 725"
-    assert context["entry_b_contract"] == "PUT 720"
-    assert "722.47 -&gt; 727.87" in svg
+    assert context["primary_value"] == "721.87"
+    assert decision["primary_trade"]["trigger_line"] == "Lower Descending Trigger"
+    assert decision["primary_trade"]["trigger_price"] == "720.60"
+    assert context["entry_label"] == "Lower Descending Trigger"
+    assert context["contract_value"].startswith("CALL")
+    assert context["entry_value"] != "727.87"
+    assert "721.87" in svg
     key_values = [value for _, value in context["key_levels"]]
     assert key_values == list(dict.fromkeys(key_values))
-    assert ("Opening Pivot / Lower Ascending Trigger", "722.47") in context["key_levels"]
+    assert ("Opening Pivot / Upper Descending Trigger", "721.87") in context["key_levels"]
 
 
 def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
@@ -344,7 +346,7 @@ def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
     lines = [
         {"code": "UA", "name": "Upper Ascending Trigger", "role": "Ascending Trigger", "value": 727.87, "anchor_price": 724.87, "anchor_time": "2026-05-01 09:00 CDT"},
         {"code": "LA", "name": "Lower Ascending Trigger", "role": "Ascending Trigger", "value": 722.47, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
-        {"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 721.87, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
+        {"code": "UD", "name": "Upper Descending Trigger", "role": "Descending Trigger", "value": 724.00, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
         {"code": "LD", "name": "Lower Descending Trigger", "role": "Descending Trigger", "value": 720.60, "anchor_price": 720.47, "anchor_time": "2026-05-01 14:00 CDT"},
     ]
     options = OptionsIntelligence(
@@ -353,7 +355,7 @@ def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
         1.2,
         722.50,
         728.0,
-        722.0,
+        720.0,
         [],
         [],
         {
@@ -377,7 +379,7 @@ def test_external_scenarios_rank_gex_confluence_at_lower_put() -> None:
         bundle.learning_profile,
         bundle.source_statuses,
         bundle.session_date,
-        722.0,
+        720.0,
     )
 
     scenarios = structure_external_scenarios(bundle)
@@ -434,8 +436,12 @@ def test_daily_brief_uses_verified_line_value_instead_of_ai_price() -> None:
 
     context = build_daily_brief_context(bundle, result)
 
-    assert context["entry_value"] == "722.47"
-    assert context["entry_label"] == "Lower Ascending Trigger"
+    decision = morning_decision_from_result(result, bundle)
+
+    assert context["entry_value"] == "721.87"
+    assert context["entry_label"] == "Upper Descending Trigger"
+    assert decision["primary_trade"]["trigger_line"] == "Upper Descending Trigger"
+    assert decision["primary_trade"]["trigger_price"] == "721.87"
     assert context["contract_value"] != "PUT 998"
     assert "999.99" not in render_daily_brief_svg(bundle, result)
 

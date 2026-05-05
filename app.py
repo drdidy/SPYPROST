@@ -1960,6 +1960,76 @@ def normalize_morning_decision(data: dict | None, confidence: int | float | None
     return normalized
 
 
+def decision_stance_side(decision: dict | None) -> str | None:
+    stance = str((decision or {}).get("stance") or "").upper()
+    if "PUT" in stance:
+        return "PUT"
+    if "CALL" in stance:
+        return "CALL"
+    trade = (decision or {}).get("primary_trade") if isinstance((decision or {}).get("primary_trade"), dict) else {}
+    text = f"{trade.get('label') or ''} {trade.get('contract') or ''}".upper()
+    if "PUT" in text:
+        return "PUT"
+    if "CALL" in text:
+        return "CALL"
+    return None
+
+
+def selected_contract_token_for_side(bundle: MorningBriefingBundle, side: str | None, entry_price=None) -> str:
+    side = str(side or "").upper()
+    quotes = getattr(getattr(bundle, "options_intelligence", None), "selected_quotes", None) or []
+    quote = next((row for row in quotes if str(row.get("type") or row.get("option_type") or "").upper() == side), None)
+    if quote:
+        strike = quote.get("strike")
+        if strike is not None:
+            suffix = "CALL" if side == "CALL" else "PUT" if side == "PUT" else side
+            return f"{suffix} {fmt_price(strike, 0)}"
+    token = _brief_otm_contract_for_price(side, entry_price)
+    return token or "No contract until confirmation"
+
+
+def enforce_morning_decision_triggers(bundle: MorningBriefingBundle, decision: dict | None) -> dict | None:
+    if not isinstance(decision, dict):
+        return decision
+    trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
+    scenarios = structure_external_scenarios(bundle)
+    if not scenarios:
+        return decision
+    requested_line = _brief_line_by_name(bundle, trade.get("trigger_line"))
+    requested_scenario = next((row for row in scenarios if requested_line and _brief_same_line(row.get("line"), requested_line)), None)
+    requested_active = bool(requested_scenario and (requested_scenario.get("line") or {}).get("entry_eligible", True))
+    requested_price = _finite_float(trade.get("trigger_price"))
+    requested_value = _finite_float((requested_scenario or {}).get("price") if requested_scenario else (requested_line or {}).get("value"))
+    price_mismatch = requested_active and not pd.isna(requested_value) and (pd.isna(requested_price) or abs(requested_price - requested_value) > 0.01)
+    side = decision_stance_side(decision)
+    selected = requested_scenario if requested_active else None
+    if selected is None:
+        selected = best_structure_scenario(bundle, side) or best_structure_scenario(bundle)
+    if selected is None:
+        return decision
+    line = selected.get("line") or {}
+    value = _finite_float(line.get("value"))
+    repaired = {**decision, "primary_trade": {**FORESIGHT_REQUIRED_TRADE_FIELDS, **trade}}
+    repaired_trade = repaired["primary_trade"]
+    changed = (not requested_active) or not _brief_same_line(line, requested_line) or price_mismatch
+    if line:
+        repaired_trade["trigger_line"] = str(line.get("name") or repaired_trade.get("trigger_line") or "Structure Trigger")
+        repaired_trade["trigger_price"] = fmt_price(value)
+        inferred_side = structure_line_side(line, getattr(bundle, "latest_price", None))
+        if inferred_side in {"CALL", "PUT"} and repaired.get("stance") not in {"WAIT", "NO_TRADE"}:
+            repaired["stance"] = f"WATCH_{inferred_side}"
+        if changed:
+            repaired_trade["label"] = f"{display_state_label(inferred_side) if inferred_side else 'Structure'} setup at {repaired_trade['trigger_line']}"
+            repaired_trade["contract"] = selected_contract_token_for_side(bundle, inferred_side, value)
+            repaired_trade["entry_rule"] = str(line.get("rule") or "Wait for touch-side confirmation at the active trigger.")
+            notes = list(repaired.get("source_notes") or [])
+            reason = "AI trigger guard repaired the assessment to the current eligible SPY Foresight trigger."
+            if reason not in notes:
+                notes.append(reason)
+            repaired["source_notes"] = notes
+    return repaired
+
+
 def verdict_weight(source: str | None) -> float:
     weights = {
         "Option Flow": 2.0,
@@ -2342,11 +2412,14 @@ def result_with_extra_citations(result: MorningBriefingResult, extra: list[dict]
     return replace(result, citations=merged)
 
 
-def morning_decision_from_result(result: MorningBriefingResult | None) -> dict | None:
+def morning_decision_from_result(result: MorningBriefingResult | None, bundle: MorningBriefingBundle | None = None) -> dict | None:
     if result is None:
         return None
     data = extract_json_payload_from_text(result.text)
-    return normalize_morning_decision(data, result.confidence)
+    decision = normalize_morning_decision(data, result.confidence)
+    if bundle is not None:
+        decision = enforce_morning_decision_triggers(bundle, decision)
+    return decision
 
 
 def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBriefingResult | None = None) -> dict:
@@ -2561,6 +2634,7 @@ def generate_morning_briefing(bundle: MorningBriefingBundle, use_ai: bool = True
             if not isinstance(raw_decision, dict):
                 return rule_based_morning_briefing(bundle, "SPY Foresight synthesis returned non-structured text; internal assessment used.")
             decision = normalize_morning_decision(raw_decision, base.confidence) or fallback_morning_decision(bundle, base)
+            decision = enforce_morning_decision_triggers(bundle, decision) or decision
             app_context = build_app_decision_context(bundle, decision)
             decision["support_refute"] = app_context["support_refute"]
             decision["desk_reviews"] = app_context["desk_reviews"]
@@ -2610,7 +2684,7 @@ def provider_audit_matrix(bundle: MorningBriefingBundle, result: MorningBriefing
 
 
 def build_foresight_audit_record(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    decision = morning_decision_from_result(result, bundle) or fallback_morning_decision(bundle, result)
     app_context = build_app_decision_context(bundle, decision)
     decision["support_refute"] = app_context["support_refute"]
     decision["desk_reviews"] = app_context["desk_reviews"]
@@ -3441,6 +3515,47 @@ def structure_line_side(line: dict | None, reference_price: float | None = None)
     return None
 
 
+def line_dict_is_descending_entry(line: dict | None) -> bool:
+    text = f"{(line or {}).get('code') or ''} {(line or {}).get('name') or ''} {(line or {}).get('role') or ''} {(line or {}).get('direction') or ''}".upper()
+    return any(token in text for token in ["UD", "LD", "DESCENDING"])
+
+
+def line_dict_is_ascending_entry(line: dict | None) -> bool:
+    text = f"{(line or {}).get('code') or ''} {(line or {}).get('name') or ''} {(line or {}).get('role') or ''} {(line or {}).get('direction') or ''}".upper()
+    return any(token in text for token in ["UA", "LA", "ASCENDING"])
+
+
+def structure_dict_trigger_regime(lines: list[dict], reference_price: float | None) -> str:
+    price = _finite_float(reference_price)
+    if pd.isna(price):
+        return "UNKNOWN"
+    upper_lines = []
+    for line in lines or []:
+        text = f"{line.get('code') or ''} {line.get('name') or ''}".upper()
+        if "UA" in text or "UD" in text or "UPPER" in text:
+            value = _finite_float(line.get("value"))
+            if not pd.isna(value):
+                upper_lines.append(value)
+    if len(upper_lines) < 2:
+        return "UNKNOWN"
+    top, bot = max(upper_lines), min(upper_lines)
+    if price > top:
+        return "BULLISH"
+    if price < bot:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def line_dict_entry_eligible(line: dict | None, lines: list[dict], reference_price: float | None) -> bool:
+    if isinstance(line, dict) and "entry_eligible" in line:
+        return bool(line.get("entry_eligible"))
+    if line_dict_is_descending_entry(line):
+        return True
+    if line_dict_is_ascending_entry(line):
+        return structure_dict_trigger_regime(lines or [], reference_price) == "BEARISH"
+    return True
+
+
 def structure_lines_with_values(bundle: MorningBriefingBundle) -> list[dict]:
     rows = []
     for line in bundle.lines or []:
@@ -3452,7 +3567,7 @@ def structure_lines_with_values(bundle: MorningBriefingBundle) -> list[dict]:
             "value": value,
             "_value": value,
             "_side": structure_line_side(line, getattr(bundle, "latest_price", None)),
-            "entry_eligible": bool(line.get("entry_eligible", True)),
+            "entry_eligible": line_dict_entry_eligible(line, bundle.lines or [], getattr(bundle, "latest_price", None)),
         })
     return sorted(rows, key=lambda row: row["_value"])
 
@@ -6283,7 +6398,7 @@ def render_morning_briefing_hero(bundle: MorningBriefingBundle, result: MorningB
     ring = {"green": "#2ecc71", "blue": "#67b7ff", "amber": "#f5c451", "red": "#ff5f7c"}.get(tone, "#67b7ff")
     event = _first_high_impact_event(bundle.economic_events)
     event_value = f"{event.event} at {event.time_label}" if event else "No scheduled catalyst"
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    decision = morning_decision_from_result(result, bundle) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
     _, _, ctx_label = _decision_line_context(bundle, decision)
     raw_stance = str(decision.get("stance") or "WAIT").upper()
@@ -6368,7 +6483,7 @@ def render_structure_scenario_board(bundle: MorningBriefingBundle, result: Morni
     scenarios = structure_external_scenarios(bundle)
     if not scenarios:
         return
-    decision = morning_decision_from_result(result) if result else None
+    decision = morning_decision_from_result(result, bundle) if result else None
     ctx_side, ctx_price, ctx_label = _decision_line_context(bundle, decision)
     selected = next((row for row in scenarios if str(row.get("name") or "") == str(ctx_label or "")), None) or scenarios[0]
     scenario_by_name = {str(row.get("name") or ""): row for row in scenarios}
@@ -6416,7 +6531,7 @@ def render_structure_scenario_board(bundle: MorningBriefingBundle, result: Morni
 
 
 def render_morning_action_panel(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    decision = morning_decision_from_result(result, bundle) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
     ctx_side, ctx_price, ctx_label = _decision_line_context(bundle, decision)
     if ctx_label:
@@ -6589,7 +6704,7 @@ def decision_stack_summary_label(row: dict) -> str:
 
 
 def render_foresight_decision_stack(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> None:
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    decision = morning_decision_from_result(result, bundle) or fallback_morning_decision(bundle, result)
     reviews = build_foresight_desk_reviews(bundle, decision)
     if not reviews:
         return
@@ -6862,17 +6977,18 @@ def _brief_line_by_name(bundle: MorningBriefingBundle, name: str | None) -> dict
             or code.lower() == needle
             or (alias_code and code.upper() == alias_code)
         ):
-            return line
+            return {**line, "entry_eligible": line_dict_entry_eligible(line, bundle.lines or [], getattr(bundle, "latest_price", None))}
     return None
 
 
 def _brief_primary_line(bundle: MorningBriefingBundle, trade: dict) -> dict:
-    return _brief_line_by_name(bundle, trade.get("trigger_line")) or (bundle.lines[0] if bundle.lines else {})
+    fallback = structure_lines_with_values(bundle)
+    return _brief_line_by_name(bundle, trade.get("trigger_line")) or (fallback[0] if fallback else (bundle.lines[0] if bundle.lines else {}))
 
 
 def _brief_neighbor_lines(bundle: MorningBriefingBundle, value: float) -> tuple[dict | None, dict | None]:
     rows = [
-        {**line, "_value": _finite_float(line.get("value"))}
+        {**line, "_value": _finite_float(line.get("value")), "entry_eligible": line_dict_entry_eligible(line, bundle.lines or [], getattr(bundle, "latest_price", None))}
         for line in bundle.lines or []
         if not pd.isna(_finite_float(line.get("value")))
     ]
@@ -6892,7 +7008,7 @@ def _brief_sorted_lines(bundle: MorningBriefingBundle) -> list[dict]:
     for line in bundle.lines or []:
         value = _finite_float(line.get("value"))
         if not pd.isna(value):
-            rows.append({**line, "_value": value, "entry_eligible": bool(line.get("entry_eligible", True))})
+            rows.append({**line, "_value": value, "entry_eligible": line_dict_entry_eligible(line, bundle.lines or [], getattr(bundle, "latest_price", None))})
     return sorted(rows, key=lambda row: row["_value"])
 
 
@@ -7039,7 +7155,7 @@ def _brief_target_stack(entry: float, target: float) -> tuple[str, str, str]:
 
 
 def build_daily_brief_context(bundle: MorningBriefingBundle, result: MorningBriefingResult) -> dict:
-    decision = morning_decision_from_result(result) or fallback_morning_decision(bundle, result)
+    decision = morning_decision_from_result(result, bundle) or fallback_morning_decision(bundle, result)
     trade = decision.get("primary_trade") if isinstance(decision.get("primary_trade"), dict) else {}
     structure_lines = _brief_sorted_lines(bundle)
     trade_line = _brief_line_by_name(bundle, trade.get("trigger_line"))
