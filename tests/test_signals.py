@@ -41,13 +41,14 @@ def test_call_rejection_confirmed_and_pending_and_invalids() -> None:
 
 def test_put_rejection_confirmed_pending_invalids() -> None:
     line = DynamicLine("UA", 100, _ts("2026-04-28T08:00:00"), 0, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+    desc_guard = DynamicLine("UD", 101, _ts("2026-04-28T08:00:00"), 0, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
     df = _candles([("2026-04-28T10:00:00",99,100.2,98.9,99.8),("2026-04-28T11:00:00",99.7,99.9,99.2,99.4)])
     assert is_put_rejection(df.iloc[0], line, df.index[0])
-    sigs = detect_rejection_signals(df,[line],[])
+    sigs = detect_rejection_signals(df,[line, desc_guard],[])
     assert sigs[0].status=="CONFIRMED" and sigs[0].entry_price==99.7 and sigs[0].stop_price==100.7
 
     df2 = _candles([("2026-04-28T10:00:00",99,100.2,98.9,99.8)])
-    assert detect_rejection_signals(df2,[line],[])[0].status=="PENDING_CONFIRMATION"
+    assert detect_rejection_signals(df2,[line, desc_guard],[])[0].status=="PENDING_CONFIRMATION"
 
     bad = _candles([("2026-04-28T10:00:00",99,100.2,98.9,100.1)])
     assert not is_put_rejection(bad.iloc[0], line, bad.index[0])
@@ -65,14 +66,26 @@ def test_trade_side_comes_from_touch_side_not_line_direction() -> None:
     assert put_signals[0].line_name == "UD"
 
     ascending = DynamicLine("UA", 100, _ts("2026-04-28T08:00:00"), 0, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+    descending_guard = DynamicLine("UD", 99.5, _ts("2026-04-28T08:00:00"), 0, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
     above_touch = _candles([
         ("2026-04-28T10:00:00", 101.0, 101.3, 99.9, 100.2),
         ("2026-04-28T11:00:00", 100.4, 101.0, 100.1, 100.8),
     ])
-    call_signals = detect_rejection_signals(above_touch, [ascending], [])
+    call_signals = detect_rejection_signals(above_touch, [ascending, descending_guard], [])
 
-    assert call_signals[0].signal_type == "CALL"
-    assert call_signals[0].line_name == "UA"
+    assert call_signals == []
+
+    upper_asc = DynamicLine("UA", 105, _ts("2026-04-28T08:00:00"), 0, "ascending", "PUT_ZONE", "PRIMARY_HIGH", True, "")
+    upper_desc = DynamicLine("UD", 104, _ts("2026-04-28T08:00:00"), 0, "descending", "CALL_ZONE", "PRIMARY_HIGH", True, "")
+    lower_asc = DynamicLine("LA", 100, _ts("2026-04-28T08:00:00"), 0, "ascending", "PUT_ZONE", "PRIMARY_LOW", True, "")
+    bearish_touch = _candles([
+        ("2026-04-28T10:00:00", 101.0, 101.3, 99.9, 100.2),
+        ("2026-04-28T11:00:00", 100.4, 101.0, 100.1, 100.8),
+    ])
+    bearish_call_signals = detect_rejection_signals(bearish_touch, [upper_asc, upper_desc, lower_asc], [])
+
+    assert bearish_call_signals[0].signal_type == "CALL"
+    assert bearish_call_signals[0].line_name == "LA"
 
 
 def test_secondary_no_entries_targets_rr_and_order() -> None:

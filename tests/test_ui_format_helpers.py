@@ -39,7 +39,7 @@ def test_display_line_names_are_product_facing():
     assert display_line_name("UA") == "Upper Ascending Trigger"
     assert display_line_name("UD") == "Upper Descending Trigger"
     assert display_line_name("S DESC 002") == "Upper Target"
-    assert display_line_description("LA") == "Ascending structure from the low pivot"
+    assert display_line_description("LA") == "Ascending structure from the low pivot; entry trigger only in bearish structure"
     assert display_line_list(["UD", "UA"]) == "Upper Descending Trigger, Upper Ascending Trigger"
 
 
