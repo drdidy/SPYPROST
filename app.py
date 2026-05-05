@@ -3878,8 +3878,8 @@ def get_watch_option_type(active_signal=None, bias_state=None) -> str | None:
 
 
 def format_watch_contract(selected_strikes: SelectedStrikes | None, active_signal=None, bias_state=None) -> str:
-    if selected_strikes is None:
-        return "-"
+    if selected_strikes is None or selected_strikes.warning:
+        return "Contract gated"
     watch_type = get_watch_option_type(active_signal, bias_state)
     if watch_type == "CALL":
         return f"WATCH CALL {selected_strikes.call_strike}"
@@ -3889,8 +3889,8 @@ def format_watch_contract(selected_strikes: SelectedStrikes | None, active_signa
 
 
 def format_watch_contract_short(selected_strikes: SelectedStrikes | None, active_signal=None, bias_state=None) -> str:
-    if selected_strikes is None:
-        return "C -<br>P -"
+    if selected_strikes is None or selected_strikes.warning:
+        return "CONTRACT<br>GATED"
     watch_type = get_watch_option_type(active_signal, bias_state)
     if watch_type == "CALL":
         return f"CALL<br>{selected_strikes.call_strike}"
@@ -4469,6 +4469,7 @@ def inject_global_css() -> None:
     .quote-trigger-price{font-family:var(--mono-font);font-size:1.75rem;font-weight:850;color:var(--blue);line-height:1}
     .quote-meta-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid rgba(141,160,184,.16);padding-top:8px;color:var(--muted);font-size:.78rem}
     .quote-meta-row strong{color:var(--text);font-weight:750;text-align:right}
+    .contract-gate-copy{color:var(--muted);font-size:.86rem;line-height:1.42}
     .strike-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .strike-cell{border:1px solid rgba(141,160,184,.18);border-radius:8px;background:rgba(7,10,15,.35);padding:9px}
     .strike-cell.call{border-left:3px solid var(--green)} .strike-cell.put{border-left:3px solid var(--red)}
@@ -4872,7 +4873,12 @@ def render_signal_card(signal):
 
 
 def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="TASTYTRADE"):
-    txt = f"SPY {_fmt_num(current_price)} | BIAS {bias_state.bias if bias_state else 'N/A'} | CLOSEST {display_line_name(closest_line.name) if closest_line else 'N/A'} | SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} | C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} | PROVIDER {provider_status}"
+    contract_text = (
+        f"C {selected_strikes.call_strike} / P {selected_strikes.put_strike}"
+        if selected_strikes and not selected_strikes.warning
+        else "CONTRACT GATED"
+    )
+    txt = f"SPY {_fmt_num(current_price)} | BIAS {bias_state.bias if bias_state else 'N/A'} | CLOSEST {display_line_name(closest_line.name) if closest_line else 'N/A'} | SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} | {contract_text} | PROVIDER {provider_status}"
     st.markdown(f"<div class='metric-card ticker-scroll'><div class='ticker-track'>{txt} &nbsp;&nbsp;&nbsp; {txt}</div></div>", unsafe_allow_html=True)
 
 
@@ -5243,6 +5249,72 @@ def _intel_tile(label: str, value: str, copy: str, tone: str = "blue", icon_name
     )
 
 
+def render_contract_watchlist_card(selected_strikes: SelectedStrikes | None, provider_status: str, latest_signal=None) -> str:
+    has_valid_strikes = bool(
+        selected_strikes
+        and not selected_strikes.warning
+        and selected_strikes.call_strike
+        and selected_strikes.put_strike
+    )
+    if has_valid_strikes:
+        return (
+            "<div class='quote-mini'>"
+            "<div class='quote-head'>"
+            "<div>"
+            "<div class='hero-label'>Contract Watch</div>"
+            "<div class='quote-eyebrow'>Valid OTM strikes</div>"
+            "</div>"
+            f"{ui_icon('contract', 'green', 'sm')}"
+            "</div>"
+            "<div class='strike-grid'>"
+            "<div class='strike-cell call'>"
+            "<div class='strike-label'>Call</div>"
+            f"<div class='strike-value'>{selected_strikes.call_strike}</div>"
+            "</div>"
+            "<div class='strike-cell put'>"
+            "<div class='strike-label'>Put</div>"
+            f"<div class='strike-value'>{selected_strikes.put_strike}</div>"
+            "</div>"
+            "</div>"
+            f"<div class='quote-meta-row'><span>Source</span><strong>{escape(display_state_label(provider_status))}</strong></div>"
+            "</div>"
+        )
+
+    if selected_strikes and selected_strikes.warning:
+        state = "Price pending"
+        copy = selected_strikes.warning
+        next_step = "Reload price"
+    elif latest_signal and latest_signal.status == "PENDING_CONFIRMATION":
+        state = "Confirmation pending"
+        copy = "The rejection has printed. Wait for the next hourly candle open before choosing the contract."
+        next_step = "Next candle"
+    elif latest_signal:
+        state = "Quote gate active"
+        copy = "The setup is available, but a valid option-chain quote has not loaded yet."
+        next_step = "Load chain"
+    else:
+        state = "Waiting for setup"
+        copy = "Contracts appear after SPY price, structure confirmation, and the option chain are ready."
+        next_step = "Confirm trigger"
+
+    return (
+        "<div class='quote-mini'>"
+        "<div class='quote-head'>"
+        "<div>"
+        "<div class='hero-label'>Contract Gate</div>"
+        "<div class='quote-eyebrow'>No contract selected</div>"
+        "</div>"
+        f"{ui_icon('shield', 'amber', 'sm')}"
+        "</div>"
+        "<div class='quote-body'>"
+        f"<div class='quote-trigger-name'>{escape(state)}</div>"
+        f"<div class='contract-gate-copy'>{escape(copy)}</div>"
+        "</div>"
+        f"<div class='quote-meta-row'><span>Next step</span><strong>{escape(next_step)}</strong></div>"
+        "</div>"
+    )
+
+
 def render_terminal_hero(
     latest_price,
     bias_state,
@@ -5274,8 +5346,7 @@ def render_terminal_hero(
     closest_value = closest_line.tradable_value_at(projection_time) if closest_line else None
     closest_name = display_line_name(closest_line.name) if closest_line else "-"
     closest_price = fmt_price(closest_value)
-    call_strike = selected_strikes.call_strike if selected_strikes else "-"
-    put_strike = selected_strikes.put_strike if selected_strikes else "-"
+    watchlist_html = render_contract_watchlist_card(selected_strikes, provider_status, latest_signal)
     if market_context is None:
         market_context = build_market_context(df, latest_price, closest_line, now_ct, float("nan"))
     pressure_value = fmt_price(market_context.spy_pressure_value) if not pd.isna(market_context.spy_pressure_value) else "-"
@@ -5353,26 +5424,7 @@ def render_terminal_hero(
                 </div>
                 <div class='quote-meta-row'><span>Projected</span><strong>{fmt_clock_time(projection_time)}</strong></div>
               </div>
-              <div class='quote-mini'>
-                <div class='quote-head'>
-                  <div>
-                    <div class='hero-label'>Same-Day Watchlist</div>
-                    <div class='quote-eyebrow'>OTM contracts</div>
-                  </div>
-                  {ui_icon('contract', 'green', 'sm')}
-                </div>
-                <div class='strike-grid'>
-                  <div class='strike-cell call'>
-                    <div class='strike-label'>Call</div>
-                    <div class='strike-value'>{call_strike}</div>
-                  </div>
-                  <div class='strike-cell put'>
-                    <div class='strike-label'>Put</div>
-                    <div class='strike-value'>{put_strike}</div>
-                  </div>
-                </div>
-                <div class='quote-meta-row'><span>Source</span><strong>{display_state_label(provider_status)}</strong></div>
-              </div>
+              {watchlist_html}
             </div>
           </div>
         </div>
