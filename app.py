@@ -368,10 +368,7 @@ def get_central_tz():
 
 
 def get_missing_tastytrade_secrets() -> list[str]:
-    try:
-        return [k for k in TASTYTRADE_SECRET_KEYS if not str(st.secrets.get(k, "")).strip()]
-    except Exception:
-        return list(TASTYTRADE_SECRET_KEYS)
+    return [k for k in TASTYTRADE_SECRET_KEYS if not get_secret_or_env(k)]
 
 
 def normalize_yfinance_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -716,13 +713,7 @@ def load_economic_calendar(path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicE
 
 
 def get_trading_economics_credential() -> str:
-    try:
-        secret_value = str(st.secrets.get("TRADING_ECONOMICS_CREDENTIAL", "")).strip()
-        if secret_value:
-            return secret_value
-    except Exception:
-        pass
-    return os.getenv("TRADING_ECONOMICS_CREDENTIAL", "").strip()
+    return get_secret_or_env("TRADING_ECONOMICS_CREDENTIAL", "")
 
 
 def format_calendar_time_from_utc(value: str | None) -> tuple[object | None, str]:
@@ -856,13 +847,29 @@ def get_upcoming_economic_events(now_ct, days: int = 7, path: str = ECONOMIC_CAL
 
 
 def get_secret_or_env(name: str, default: str = "") -> str:
+    env_value = os.getenv(name, "").strip()
+    if env_value:
+        return env_value
+    if not should_read_streamlit_secrets():
+        return default.strip()
     try:
         value = str(st.secrets.get(name, "")).strip()
         if value:
             return value
     except Exception:
         pass
-    return os.getenv(name, default).strip()
+    return default.strip()
+
+
+def should_read_streamlit_secrets() -> bool:
+    """Avoid noisy Streamlit warnings when a local secrets file is intentionally absent."""
+    candidate_paths = [
+        Path.cwd() / ".streamlit" / "secrets.toml",
+        Path.home() / ".streamlit" / "secrets.toml",
+    ]
+    if any(path.exists() for path in candidate_paths):
+        return True
+    return os.getenv("STREAMLIT_CLOUD", "").lower() in {"1", "true", "yes", "on"}
 
 
 def get_structure_calibration(default: float = DEFAULT_SLOPE_PER_HOUR) -> float:
@@ -4537,12 +4544,42 @@ def inject_global_css() -> None:
     .zone-call{border-color:rgba(33,208,122,.55)} .zone-put{border-color:rgba(255,95,124,.55)} .zone-neutral{border-color:rgba(103,183,255,.55)}
     .signal-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;border:1px solid var(--border);margin-bottom:8px}.signal-call{background:rgba(33,208,122,.14)} .signal-put{background:rgba(255,95,124,.14)}
     .distance-wrap{height:7px;border-radius:99px;background:#1b2943}.distance-fill{height:7px;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--green))}
+    *,*::before,*::after{box-sizing:border-box}
+    .block-container{max-width:min(1460px,96vw);padding-left:clamp(14px,2vw,30px);padding-right:clamp(14px,2vw,30px)}
+    .stMarkdown,.stMarkdown *,.terminal-panel,.prophet-card,.metric-card,.empty-state,.warning-panel,.structure-tile,.brief-card,.replay-shell,.outcome-card,.learning-hero,.prob-card,.news-card,.calendar-row,.briefing-shell,.source-card,.morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card,.daily-guide,.daily-guide-card,.daily-guide-stat,.daily-guide-row,.option-quote-cell{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:normal}
+    .terminal-panel,.prophet-card,.metric-card,.structure-tile,.brief-card,.replay-shell,.outcome-card,.learning-hero,.prob-card,.news-card,.calendar-row,.briefing-shell,.source-card,.morning-control,.morning-hero,.morning-line-card,.morning-card,.brief-plan-shell,.scenario-card,.decision-summary,.action-brief,.flow-board,.flow-card,.ai-verify,.morning-narrative,.evidence-shell,.evidence-card,.source-ledger,.source-row,.scout-card,.citation-card,.daily-guide,.daily-guide-card,.daily-guide-stat,.daily-guide-row{position:relative;overflow:hidden}
+    .terminal-panel,.structure-tile,.brief-card,.morning-line-card,.morning-card,.flow-card,.evidence-card,.daily-guide-card,.daily-guide-stat,.option-quote-cell{transition:border-color .18s ease,background .18s ease,transform .18s ease,box-shadow .18s ease}
+    .terminal-panel:hover,.structure-tile:hover,.brief-card:hover,.morning-line-card:hover,.morning-card:hover,.flow-card:hover,.evidence-card:hover,.daily-guide-card:hover,.option-quote-cell:hover{border-color:rgba(103,183,255,.42);background-color:rgba(255,255,255,.05);box-shadow:0 12px 28px rgba(0,0,0,.18)}
+    .card-title,.card-value,.small-muted,.panel-title,.panel-copy,.tile-name,.tile-value,.tile-meta,.brief-label,.brief-value,.brief-copy,.replay-title,.replay-copy,.prob-label,.prob-value,.news-title,.news-summary,.calendar-event,.calendar-notes,.source-name,.source-state,.source-detail,.morning-title,.morning-subtitle,.morning-stat-label,.morning-stat-value,.morning-stat-copy,.morning-line-role,.morning-line-value,.morning-line-anchor,.morning-card-title,.morning-card-value,.morning-card-copy,.scenario-title,.scenario-price,.scenario-state,.scenario-list span,.decision-main,.decision-reason,.action-headline,.action-summary,.action-ticket-value,.action-ticket-copy,.flow-read-value,.flow-read-copy,.flow-value,.flow-copy,.flow-means,.flow-level,.ai-verify-value,.ai-verify-note,.evidence-value,.evidence-detail,.source-row-name,.source-row-meta,.daily-guide-title,.daily-guide-copy,.daily-guide-value,.daily-guide-note,.daily-guide-card-value,.daily-guide-card-copy,.daily-guide-row-copy,.option-quote-value,.option-quote-mark,.option-quote-strike{min-width:0;max-width:100%;overflow-wrap:anywhere}
+    .hero-grid{grid-template-columns:minmax(280px,1fr) minmax(360px,1.35fr) minmax(260px,.85fr)}
+    .command-grid,.morning-dashboard,.flow-board-grid,.ai-verify-grid{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+    .structure-grid,.brief-grid,.source-grid,.briefing-mini-grid,.evidence-grid,.scout-grid,.citation-grid,.upgrade-grid,.daily-guide-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+    .morning-lines{grid-template-columns:repeat(auto-fit,minmax(235px,1fr))}
+    .decision-stack-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+    .outcome-row{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+    .probability-grid,.daily-guide-status{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+    .option-quote-grid{grid-template-columns:repeat(auto-fit,minmax(118px,1fr))}
+    .flow-read{grid-template-columns:minmax(220px,.34fr) minmax(280px,1fr)}
+    .status-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;padding:10px}
+    .status-strip span{display:flex;flex-direction:column;gap:2px;min-width:0;border:1px solid rgba(141,160,184,.12);border-radius:8px;background:rgba(255,255,255,.025);padding:8px;line-height:1.25;overflow-wrap:anywhere}
+    .status-strip b{font-size:.72rem;color:#aeb9c6;text-transform:none;letter-spacing:0}
+    .card-value,.tile-value,.brief-value,.prob-value,.morning-line-value,.morning-orb-value,.scenario-price,.option-quote-strike,.option-quote-mark{font-size:clamp(1.05rem,1.8vw,1.62rem);line-height:1.12}
+    .hero-price{font-size:clamp(2.2rem,4vw,3rem)}
+    .brand-title{font-size:clamp(2rem,4.3vw,3rem)}
+    .panel-copy,.brief-copy,.replay-copy,.news-summary,.calendar-notes,.flow-copy,.flow-means,.action-summary,.action-ticket-copy,.ai-verify-note,.evidence-detail,.daily-guide-card-copy{line-height:1.5}
+    .option-quote-main{align-items:flex-start}.option-quote-mark{text-align:left}.quote-meta-row,.flow-level,.source-ledger-head,.evidence-head,.action-brief-head,.flow-board-head,.ai-verify-head,.morning-narrative-head{align-items:flex-start}
+    [data-testid="stAlert"]{border-radius:8px;border:1px solid rgba(245,196,81,.26);background:rgba(245,196,81,.08);overflow-wrap:anywhere}
+    [data-testid="stAlert"] p{font-size:.86rem;line-height:1.4}
+    div[data-baseweb="tab-list"]{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}
+    div[data-baseweb="tab-list"] button[role="tab"]{height:auto;min-height:44px;flex:1 1 0;min-width:112px;scroll-snap-align:start}
+    div[data-baseweb="tab-list"] button[role="tab"] p{overflow:hidden;text-overflow:ellipsis}
+    @media (max-width: 1280px){.hero-grid,.context-grid,.action-grid,.daily-guide-head,.morning-action-grid{grid-template-columns:1fr}.flow-read{grid-template-columns:1fr}}
     @media (max-width: 1100px){.hero-grid,.command-grid,.brief-grid,.context-grid,.source-grid,.briefing-mini-grid,.scout-grid,.citation-grid,.morning-hero-inner,.morning-dashboard,.scenario-grid,.decision-stack-grid,.decision-summary-grid,.morning-action-grid,.action-grid,.ai-verify-grid,.evidence-grid,.evidence-flow,.source-ledger-grid,.upgrade-grid,.flow-board-grid,.daily-guide-head,.daily-guide-grid{grid-template-columns:1fr}.morning-lines{grid-template-columns:repeat(2,minmax(0,1fr))}.morning-orb{justify-self:start}.wait-discipline{grid-template-columns:1fr}.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outcome-row{grid-template-columns:repeat(2,minmax(0,1fr))}.option-quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.daily-guide-row{grid-template-columns:1fr}}
     @keyframes brandDraw{0%{stroke-dashoffset:34;opacity:.62}45%,70%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:-34;opacity:.62}}
     @keyframes brandPulse{0%,100%{r:1.8;opacity:.7}50%{r:3.1;opacity:1}}
     @keyframes brandOrbit{to{transform:rotate(360deg)}}
     @keyframes brandScan{0%,100%{transform:translateY(-5px);opacity:.18}50%{transform:translateY(5px);opacity:.78}}
-    @media (max-width: 680px){.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid,.morning-lines,.morning-hero-metrics{grid-template-columns:1fr}.morning-title{font-size:1.55rem}.morning-orb{width:150px}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.brand-logo{width:74px;height:74px}}
+    @media (max-width: 680px){div[data-baseweb="tab-list"]{scroll-snap-type:x proximity;justify-content:flex-start;gap:6px;padding:6px}div[data-baseweb="tab-list"] button[role="tab"]{flex:0 0 128px;min-width:128px;padding:10px 12px}div[data-baseweb="tab-list"] button[role="tab"] p{font-size:.8rem}.terminal-top{align-items:flex-start;flex-direction:column}.brand-title{font-size:2rem}.hero-price{font-size:2.45rem}.structure-grid,.morning-lines,.morning-hero-metrics{grid-template-columns:1fr}.morning-title{font-size:1.55rem}.morning-orb{width:150px}.ui-icon.lg{width:64px;height:64px}.ui-icon.md{width:54px;height:54px}.brand-logo{width:74px;height:74px}.status-strip{grid-template-columns:1fr}.strike-grid,.hero-intel,.daily-guide-status{grid-template-columns:1fr}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -8073,8 +8110,13 @@ def get_tastytrade_option_provider():
     if missing:
         return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":missing}
     try:
-        env=st.secrets.get("TASTYTRADE_ENVIRONMENT","production")
-        provider = TastytradeProvider(st.secrets["TASTYTRADE_CLIENT_ID"], st.secrets["TASTYTRADE_CLIENT_SECRET"], st.secrets["TASTYTRADE_REFRESH_TOKEN"], env)
+        env=get_secret_or_env("TASTYTRADE_ENVIRONMENT","production")
+        provider = TastytradeProvider(
+            get_secret_or_env("TASTYTRADE_CLIENT_ID"),
+            get_secret_or_env("TASTYTRADE_CLIENT_SECRET"),
+            get_secret_or_env("TASTYTRADE_REFRESH_TOKEN"),
+            env,
+        )
         return provider, {"provider":"TASTYTRADE","connected":True,"quotes_ok":None,"missing_secrets":[]}
     except Exception as e:
         return None, {"provider":"TASTYTRADE","connected":False,"quotes_ok":False,"missing_secrets":[],"last_error":type(e).__name__}
