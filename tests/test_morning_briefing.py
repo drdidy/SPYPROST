@@ -32,6 +32,9 @@ from app import (
     fallback_morning_decision,
     order_flow_board_cards,
     order_flow_plain_english,
+    merge_unusual_whales_gex,
+    premium_feed_coverage,
+    summarize_unusual_whales_option_contracts,
     summarize_unusual_whales_flow_alerts,
     summarize_unusual_whales_gex,
     summarize_unusual_whales_greeks,
@@ -705,6 +708,51 @@ def test_unusual_whales_greeks_keeps_nearby_strikes() -> None:
     assert len(summary["levels"]) == 1
 
 
+def test_unusual_whales_option_contracts_summarize_liquidity_near_spy() -> None:
+    summary = summarize_unusual_whales_option_contracts(
+        {
+            "data": [
+                {"expiration": "2026-05-01", "type": "call", "strike": "720", "volume": "1200", "open_interest": "2400", "bid": "1.20", "ask": "1.24"},
+                {"expiration": "2026-05-01", "type": "put", "strike": "716", "volume": "1000", "open_interest": "2200", "bid": "1.10", "ask": "1.15"},
+                {"expiration": "2026-05-01", "type": "call", "strike": "740", "volume": "9000", "open_interest": "9000"},
+            ]
+        },
+        expiration_date="2026-05-01",
+        latest_price=718,
+    )
+
+    assert summary is not None
+    assert summary["contract_count"] == 2
+    assert summary["top_calls"][0]["strike"] == 720.0
+    assert summary["top_puts"][0]["strike"] == 716.0
+    assert summary["liquid_strikes"][0]["strike"] in {716.0, 720.0}
+
+
+def test_unusual_whales_gex_uses_static_when_spot_is_empty() -> None:
+    merged = merge_unusual_whales_gex(
+        {"data": []},
+        {"data": [{"strike": "722", "call_gamma_oi": "100", "put_gamma_oi": "-500"}]},
+        latest_price=721,
+    )
+
+    assert merged["source"] == "static"
+    assert merged["levels"][0]["strike"] == 722.0
+
+
+def test_premium_feed_coverage_counts_loaded_feeds() -> None:
+    coverage = premium_feed_coverage(
+        {
+            "flow_alerts": {"alert_count": 2},
+            "contract_liquidity": {"contract_count": 4},
+            "gex": {"levels": [{"strike": 720}]},
+        }
+    )
+
+    assert coverage["loaded"] == 3
+    assert coverage["total"] >= 10
+    assert "Premium feeds" in coverage["label"]
+
+
 def test_unusual_whales_card_only_appears_when_paid_data_loaded() -> None:
     empty = OptionsIntelligence(SourceStatus("Options intelligence", "connected", ""), 1, 1, 710, 712, 708, [])
     assert unusual_whales_card_data(empty)[0] == ""
@@ -760,6 +808,16 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
             "market_tide": {"tone": "Risk-on options tide", "net_call_premium": 1200000, "net_put_premium": -300000},
             "net_premium_ticks": {"tone": "Call premium building", "net_premium": 900000, "net_call_premium": 1200000, "net_put_premium": -300000},
             "options_volume": {"put_call_volume_ratio": 0.8},
+            "contract_liquidity": {
+                "contract_count": 4,
+                "top_calls": [{"strike": 720, "liquidity_score": 1200}],
+                "top_puts": [{"strike": 716, "liquidity_score": 1000}],
+                "liquid_strikes": [{"strike": 720, "liquidity_score": 1200}],
+                "call_volume": 500,
+                "put_volume": 400,
+                "call_open_interest": 700,
+                "put_open_interest": 600,
+            },
             "darkpool": {
                 "print_count": 12,
                 "total_premium": 88_000_000,
@@ -771,11 +829,13 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     cards = order_flow_board_cards(options)
     read = order_flow_plain_english(options)
 
-    assert {card["title"] for card in cards} >= {"Same-Day Flow Alerts", "Recent Tape", "Market Tide", "Dark Pool Levels"}
+    assert {card["title"] for card in cards} >= {"Same-Day Flow Alerts", "Recent Tape", "Market Tide", "Contract Liquidity", "Dark Pool Levels"}
     flow_card = next(card for card in cards if card["title"] == "Same-Day Flow Alerts")
     assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
     assert darkpool["levels"][0]["label"] == "719.50"
     assert "support or caution against an entry" in darkpool["means"]
+    liquidity = next(card for card in cards if card["title"] == "Contract Liquidity")
+    assert "contract selection" in liquidity["means"]
     assert read["label"] == "Flow supports calls"
     assert read["tone"] == "call"

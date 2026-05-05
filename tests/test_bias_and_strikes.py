@@ -165,6 +165,29 @@ def test_flow_aware_contracts_use_nearby_otm_flow_not_far_chase() -> None:
     assert s.put_strike == 716
 
 
+def test_flow_aware_contracts_can_use_paid_liquidity_when_flow_alerts_are_empty() -> None:
+    options = OptionsIntelligence(
+        SourceStatus("Options intelligence", "connected", ""),
+        1,
+        1,
+        718,
+        724,
+        715,
+        [],
+        unusual_whales={
+            "contract_liquidity": {
+                "top_calls": [{"strike": 720, "liquidity_score": 5000}, {"strike": 724, "liquidity_score": 9000}],
+                "top_puts": [{"strike": 716, "liquidity_score": 4000}],
+            }
+        },
+    )
+
+    s = select_flow_aware_watch_contracts(717.85, _ts("2026-04-29T09:00:00"), options_intel=options)
+
+    assert s.call_strike == 720
+    assert s.put_strike == 716
+
+
 def test_flow_alignment_warns_when_pressure_conflicts_with_watch_side() -> None:
     options = OptionsIntelligence(
         SourceStatus("Options intelligence", "connected", ""),

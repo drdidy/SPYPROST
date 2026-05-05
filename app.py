@@ -1399,6 +1399,70 @@ def summarize_unusual_whales_greeks(payload: dict | None, expiration_date=None, 
     }
 
 
+def summarize_unusual_whales_option_contracts(payload: dict | None, expiration_date=None, latest_price: float | None = None) -> dict | None:
+    expiry_target = str(expiration_date) if expiration_date is not None else ""
+    rows = []
+    for row in payload_rows(payload):
+        row_expiry = str(row.get("expiry") or row.get("expiration") or row.get("expiration_date") or "")
+        if expiry_target and row_expiry and row_expiry != expiry_target:
+            continue
+        option_type = _option_row_type(row)
+        if option_type not in {"CALL", "PUT"}:
+            continue
+        strike = _strike_key(row.get("strike"))
+        if strike is None:
+            continue
+        if latest_price is not None and not pd.isna(latest_price) and abs(strike - float(latest_price)) > 12:
+            continue
+        bid = _finite_float(row.get("bid") or row.get("bid_price"))
+        ask = _finite_float(row.get("ask") or row.get("ask_price"))
+        mark = _finite_float(row.get("mark") or row.get("mid") or row.get("last") or row.get("price"))
+        volume = _finite_float(row.get("volume") or row.get("vol"), 0.0)
+        open_interest = _finite_float(row.get("open_interest") or row.get("openInterest") or row.get("oi"), 0.0)
+        premium = _finite_float(row.get("premium") or row.get("total_premium"), 0.0)
+        liquidity_score = volume * 1.5 + open_interest + premium / 1000.0
+        rows.append({
+            "type": option_type,
+            "strike": strike,
+            "volume": volume,
+            "open_interest": open_interest,
+            "bid": None if pd.isna(bid) else bid,
+            "ask": None if pd.isna(ask) else ask,
+            "mark": None if pd.isna(mark) else mark,
+            "delta": None if pd.isna(_finite_float(row.get("delta"))) else _finite_float(row.get("delta")),
+            "iv": None if pd.isna(_finite_float(row.get("iv") or row.get("implied_volatility"))) else _finite_float(row.get("iv") or row.get("implied_volatility")),
+            "symbol": row.get("option_symbol") or row.get("symbol") or row.get("contract"),
+            "liquidity_score": liquidity_score,
+        })
+    if not rows:
+        return None
+    calls = [row for row in rows if row["type"] == "CALL"]
+    puts = [row for row in rows if row["type"] == "PUT"]
+
+    def _rank(side_rows: list[dict]) -> list[dict]:
+        return sorted(side_rows, key=lambda row: (row.get("liquidity_score", 0.0), row.get("volume", 0.0), row.get("open_interest", 0.0)), reverse=True)[:8]
+
+    by_strike: dict[float, dict] = {}
+    for row in rows:
+        bucket = by_strike.setdefault(row["strike"], {"strike": row["strike"], "call_volume": 0.0, "put_volume": 0.0, "call_open_interest": 0.0, "put_open_interest": 0.0, "liquidity_score": 0.0})
+        prefix = "call" if row["type"] == "CALL" else "put"
+        bucket[f"{prefix}_volume"] += _finite_float(row.get("volume"), 0.0)
+        bucket[f"{prefix}_open_interest"] += _finite_float(row.get("open_interest"), 0.0)
+        bucket["liquidity_score"] += _finite_float(row.get("liquidity_score"), 0.0)
+    strike_rows = sorted(by_strike.values(), key=lambda row: row.get("liquidity_score", 0.0), reverse=True)[:8]
+    return {
+        "contract_count": len(rows),
+        "top_calls": _rank(calls),
+        "top_puts": _rank(puts),
+        "liquid_strikes": strike_rows,
+        "call_volume": sum(_finite_float(row.get("volume"), 0.0) for row in calls),
+        "put_volume": sum(_finite_float(row.get("volume"), 0.0) for row in puts),
+        "call_open_interest": sum(_finite_float(row.get("open_interest"), 0.0) for row in calls),
+        "put_open_interest": sum(_finite_float(row.get("open_interest"), 0.0) for row in puts),
+        "as_of": str(pd.Timestamp.now(tz=get_central_tz())),
+    }
+
+
 def summarize_unusual_whales_options_volume(payload: dict | None, now_ct) -> dict | None:
     rows = [row for row in payload_rows(payload) if row_is_current_for_0dte(row, now_ct, ("timestamp", "date", "time"))]
     if not rows:
@@ -1468,6 +1532,18 @@ def summarize_unusual_whales_darkpool(payload: dict | None, now_ct, latest_price
     }
 
 
+def uw_news_row_is_spy_relevant(row: dict) -> bool:
+    tickers = row.get("tickers") or row.get("symbols") or row.get("ticker") or row.get("symbol")
+    if isinstance(tickers, list):
+        if any(str(item).upper() in {SYMBOL, "SPX", "ES", "QQQ", "VIX", "^VIX"} for item in tickers):
+            return True
+    elif tickers and str(tickers).upper() in {SYMBOL, "SPX", "ES", "QQQ", "VIX", "^VIX"}:
+        return True
+    text = f"{row.get('title') or row.get('headline') or ''} {row.get('summary') or ''}".lower()
+    keywords = ("spy", "s&p", "spx", "futures", "fed", "inflation", "jobs", "yields", "treasury", "vix", "market", "nasdaq")
+    return any(keyword in text for keyword in keywords)
+
+
 def summarize_unusual_whales_market_tide(payload: dict | None, now_ct) -> dict | None:
     rows = [row for row in payload_rows(payload) if row_is_current_for_0dte(row, now_ct, ("timestamp", "date"))]
     if not rows:
@@ -1519,11 +1595,49 @@ def summarize_unusual_whales_gex(payload: dict | None, latest_price: float | Non
     return {"gamma_flip": gamma_flip, "dealer_tone": tone, "levels": ranked, "net_gex": net}
 
 
+def merge_unusual_whales_gex(spot_payload: dict | None, static_payload: dict | None, latest_price: float | None = None) -> dict:
+    spot = summarize_unusual_whales_gex(spot_payload, latest_price)
+    static = summarize_unusual_whales_gex(static_payload, latest_price)
+    if spot.get("levels"):
+        return {
+            **spot,
+            "source": "spot",
+            "static_levels": static.get("levels") or [],
+            "static_gamma_flip": static.get("gamma_flip"),
+        }
+    if static.get("levels"):
+        return {**static, "source": "static", "static_levels": static.get("levels") or [], "static_gamma_flip": static.get("gamma_flip")}
+    return {**spot, "source": "pending", "static_levels": static.get("levels") or [], "static_gamma_flip": static.get("gamma_flip")}
+
+
+def premium_feed_coverage(whales: dict | None) -> dict:
+    if not isinstance(whales, dict):
+        return {"loaded": 0, "total": 0, "label": "Premium feeds pending", "feeds": {}}
+    checks = {
+        "flow_alerts": bool((whales.get("flow_alerts") or {}).get("alert_count")),
+        "recent_flow": bool(whales.get("recent_flow")),
+        "market_tide": bool(whales.get("market_tide")),
+        "net_premium": bool(whales.get("net_premium_ticks")),
+        "options_volume": bool(whales.get("options_volume")),
+        "contract_liquidity": bool(whales.get("contract_liquidity")),
+        "iv": bool(whales.get("interpolated_iv")),
+        "gex": bool((whales.get("gex") or {}).get("levels")),
+        "greeks": bool(whales.get("greeks")),
+        "darkpool": bool(whales.get("darkpool")),
+        "news": bool(whales.get("fresh_news")),
+    }
+    loaded = sum(1 for value in checks.values() if value)
+    total = len(checks)
+    return {"loaded": loaded, "total": total, "label": f"Premium feeds {loaded}/{total}", "feeds": checks}
+
+
 def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | None = None, now_ct=None) -> tuple[dict | None, SourceStatus]:
     now = pd.Timestamp(now_ct if now_ct is not None else datetime.now(tz=get_central_tz()))
     now = now.tz_localize(get_central_tz()) if now.tzinfo is None else now.tz_convert(get_central_tz())
     if not get_unusual_whales_token():
         return None, unusual_whales_status(False, "Order-flow feed inactive.", skipped=True)
+    if latest_price is None or pd.isna(_finite_float(latest_price)):
+        return None, unusual_whales_status(False, "Premium order-flow scan waits for a valid SPY price.", now, skipped=True)
     today = str(now.date())
     errors = []
     flow_payload, err = fetch_unusual_whales_json(
@@ -1540,40 +1654,34 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     recent_flow_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/flow-recent")
     if err:
         errors.append(err)
-    tide_payload, err = fetch_unusual_whales_json("/api/market/market-tide", (("date", today), ("otm_only", "true"), ("interval_5m", "true")))
+    tide_payload, err = fetch_unusual_whales_json("/api/market/market-tide", (("interval_5m", "true"),))
     if err:
         errors.append(err)
     net_premium_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/net-prem-ticks")
     if err:
         errors.append(err)
-    options_volume_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/options-volume", (("date", today),))
+    options_volume_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/options-volume")
     if err:
         errors.append(err)
-    iv_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/interpolated-iv", (("date", today),))
+    iv_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/interpolated-iv")
     if err:
         errors.append(err)
-    gex_payload, err = fetch_unusual_whales_json(
-        f"/api/stock/{SYMBOL}/spot-exposures/strike",
-        tuple(
-            (key, value)
-            for key, value in [
-                ("date", today),
-                ("min_strike", int(float(latest_price) - 35) if latest_price is not None and not pd.isna(latest_price) else None),
-                ("max_strike", int(float(latest_price) + 35) if latest_price is not None and not pd.isna(latest_price) else None),
-                ("limit", 100),
-            ]
-            if value is not None
-        ),
-    )
+    contract_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/option-contracts")
+    if err:
+        errors.append(err)
+    gex_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/spot-exposures/strike")
+    if err:
+        errors.append(err)
+    static_gex_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/greek-exposure/strike")
     if err:
         errors.append(err)
     greeks_payload, err = fetch_unusual_whales_json(f"/api/stock/{SYMBOL}/greeks")
     if err:
         errors.append(err)
-    darkpool_payload, err = fetch_unusual_whales_json(f"/api/darkpool/{SYMBOL}", (("limit", 50),))
+    darkpool_payload, err = fetch_unusual_whales_json(f"/api/darkpool/{SYMBOL}")
     if err:
         errors.append(err)
-    news_payload, err = fetch_unusual_whales_json("/api/news/headlines", (("ticker", SYMBOL), ("limit", 10),))
+    news_payload, err = fetch_unusual_whales_json("/api/news/headlines")
     if err:
         errors.append(err)
     flow = summarize_unusual_whales_flow_alerts(flow_payload, now, expiration_date)
@@ -1582,11 +1690,15 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     net_premium = summarize_unusual_whales_net_premium_ticks(net_premium_payload, now)
     volume = summarize_unusual_whales_options_volume(options_volume_payload, now)
     iv = summarize_unusual_whales_iv(iv_payload)
+    contract_liquidity = summarize_unusual_whales_option_contracts(contract_payload, expiration_date, latest_price)
     darkpool = summarize_unusual_whales_darkpool(darkpool_payload, now, latest_price)
-    gex = summarize_unusual_whales_gex(gex_payload, latest_price)
+    gex = merge_unusual_whales_gex(gex_payload, static_gex_payload, latest_price)
     greeks = summarize_unusual_whales_greeks(greeks_payload, expiration_date, latest_price)
-    uw_news_rows = [row for row in payload_rows(news_payload) if row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))][:5]
-    has_data = bool(flow["alert_count"] or recent_flow or tide or net_premium or volume or iv or darkpool or uw_news_rows or gex.get("levels") or greeks)
+    uw_news_rows = [
+        row for row in payload_rows(news_payload)
+        if uw_news_row_is_spy_relevant(row) and row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))
+    ][:5]
+    has_data = bool(flow["alert_count"] or recent_flow or tide or net_premium or volume or iv or contract_liquidity or darkpool or uw_news_rows or gex.get("levels") or greeks)
     if not has_data:
         detail = "Premium order-flow feed is connected, but no current same-day SPY rows returned yet."
         if errors:
@@ -1601,6 +1713,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         "net_premium_ticks": net_premium,
         "options_volume": volume,
         "interpolated_iv": iv,
+        "contract_liquidity": contract_liquidity,
         "darkpool": darkpool,
         "fresh_news": [
             {
@@ -1621,6 +1734,8 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         bits.append("recent SPY flow tape")
     if net_premium:
         bits.append("net premium tape")
+    if contract_liquidity:
+        bits.append("contract liquidity")
     if tide:
         bits.append(tide["tone"])
     if gex.get("levels"):
@@ -1629,6 +1744,10 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         bits.append("near-strike Greeks")
     if darkpool:
         bits.append("SPY dark-pool prints")
+    coverage = premium_feed_coverage(payload)
+    payload["coverage"] = coverage
+    if coverage["total"]:
+        bits.append(coverage["label"])
     detail = "Available context: " + ", ".join(bits or ["premium SPY flow context"]) + "."
     return payload, unusual_whales_status(True, detail, flow.get("as_of") or now)
 
@@ -1664,7 +1783,7 @@ def build_options_intelligence(expiration_date, underlying_price: float | None =
     put_wall = float(puts.sort_values("openInterest", ascending=False).iloc[0]["strike"]) if put_oi > 0 else float("nan")
     detail = "Available option-chain context using near-SPY open interest, volume, and selected contract quotes."
     if whales_payload:
-        detail += " Premium flow and gamma context is active."
+        detail += " Premium flow, contract liquidity, dark-pool, and gamma context is active."
     status = source_status("Options intelligence", True, detail, pd.Timestamp.now(tz=get_central_tz()))
     return OptionsIntelligence(
         status,
@@ -1685,9 +1804,10 @@ def build_gamma_exposure_insight(options_intel: OptionsIntelligence) -> GammaExp
     if isinstance(whales_gex, dict) and (whales_gex.get("levels") or whales_gex.get("gamma_flip")):
         levels = whales_gex.get("levels") or []
         magnets = [row.get("strike") for row in levels if isinstance(row, dict) and row.get("strike") is not None]
-        notes = "Spot GEX by strike is available; use these levels as volatility/magnet context, not as standalone entries."
+        source_label = "spot GEX" if str(whales_gex.get("source") or "spot") == "spot" else "static GEX"
+        notes = f"SPY {source_label} by strike is available; use these levels as volatility/magnet context, not as standalone entries."
         return GammaExposureInsight(
-            source_status("Dealer GEX", True, "SPY spot GEX by strike available.", pd.Timestamp.now(tz=get_central_tz())),
+            source_status("Dealer GEX", True, f"SPY {source_label} by strike available.", pd.Timestamp.now(tz=get_central_tz())),
             whales_gex.get("gamma_flip"),
             str(whales_gex.get("dealer_tone") or "Dealer GEX"),
             [float(x) for x in magnets[:6] if not pd.isna(_finite_float(x))],
@@ -1951,16 +2071,16 @@ def build_morning_briefing_prompt(bundle: MorningBriefingBundle) -> str:
     return (
         "Act as the SPY Foresight Engine inside SPY Prophet. Produce an actionable, structured read for a same-day SPY options desk.\n"
         "Rules: use the verified JSON facts plus live web search facts with citations. Do not invent unavailable options flow, social, or news. "
-        "If premium order-flow data is present, treat it as the primary options-flow source and explicitly weigh same-day SPY OTM flow alerts, recent tape, net premium ticks, market tide, key strikes, near-strike Greeks, dark-pool levels, IV, and GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
+        "If premium order-flow data is present, treat it as the primary options-flow source and explicitly weigh same-day SPY OTM flow alerts, recent tape, net premium ticks, market tide, contract liquidity, key strikes, near-strike Greeks, dark-pool levels, IV, and dealer GEX; pair that with local max pain before choosing CALL/PUT/WAIT. "
         "For same-day relevance, use only same-day or previous-day external headlines and clearly ignore stale articles. "
         "Only discuss true dealer GEX if a configured provider payload is present; otherwise use the option-chain magnet proxy without saying GEX is missing. "
         "If a premium source is not accessible, omit that section from the main briefing instead of padding with apologies. "
         "Use probabilistic wording, not certainty. Include exact avoid-trading times around high-impact events. "
         "Every outside input must either support, caution, warn, or be marked neutral for the specific SPY Prophet entry being considered; do not list decorative facts. "
         "Use APP_DECISION_CONTEXT_JSON.structure_scenarios as the authoritative scenario matrix: compare GEX, max pain, dark-pool levels, OI walls, and option-flow strikes against every SPY Prophet trigger before selecting a primary setup. "
-        "The primary_trade trigger_line and trigger_price must match one of the verified SPY Prophet lines exactly; never invent a trigger price. "
+        "The primary_trade trigger_line and trigger_price must match one of the verified SPY Foresight structure lines exactly; never invent a trigger price. "
         "Do not map PUT setups to ascending lines or CALL setups to descending lines by name. Direction comes from price behavior: above a line, touch from above, and close above is a CALL/buy setup; below a line, touch from below, and close below is a PUT/sell setup. A descending line can absolutely be the put/sell trigger when price is below it. "
-        "Tie every recommendation back to SPY Prophet lines and external context. "
+        "Tie every recommendation back to SPY Foresight structure lines and external context. "
         "Prefer sources on the scout list when current public pages are accessible, especially Tradytics public posts/videos, and cite only pages actually used. "
         "Return ONLY valid JSON. No Markdown, no bullets outside JSON, no long narrative. "
         "If there is no clean trade, make the stance WAIT and explain the exact condition that would change it.\n\n"
@@ -2274,7 +2394,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             "entry_timing": "Next candle open after confirmation",
             "entry_rule": "Above the line: touch from above and close above. Below the line: touch from below and close below.",
             "stop": "Invalid if SPY closes back through the trigger after entry.",
-            "target": "Nearest valid SPY Prophet target line",
+            "target": "Nearest valid SPY Foresight target line",
             "confidence": confidence,
         },
         "why": reasons,
@@ -2282,7 +2402,7 @@ def fallback_morning_decision(bundle: MorningBriefingBundle, result: MorningBrie
             {"label": "Chasing between lines", "reason": "The edge is at the structure trigger, not in the middle of the channel."},
         ],
         "risk_flags": risk_flags,
-        "source_notes": ["Internal summary from the verified SPY Prophet data bundle."],
+        "source_notes": ["Internal summary from the verified SPY Foresight data bundle."],
         "novice_summary": "Await confirmed line rejection, then evaluate the nearest valid OTM contract.",
     }
     app_context = build_app_decision_context(bundle, decision)
@@ -2342,7 +2462,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     technical = bundle.technical_context
     options = bundle.options_intelligence
     gamma = bundle.gamma_insight
-    recommendation = "Wait for a clean hourly rejection at one of the SPY Prophet triggers before choosing direction."
+    recommendation = "Wait for a clean hourly rejection at one of the structure triggers before choosing direction."
     if bundle.learning_profile.target_first_rate > bundle.learning_profile.stop_first_rate and bundle.lines:
         recommendation = f"Favor the nearest valid trigger only after confirmation; historical TP1+ rate is {fmt_pct(bundle.learning_profile.target_first_rate * 100, 0)} for the matched structure set."
     gamma_line = f"- Gamma exposure: {gamma.dealer_tone}. {gamma.notes}\n" if gamma.provider_payload else ""
@@ -2398,7 +2518,7 @@ def rule_based_morning_briefing(bundle: MorningBriefingBundle, ai_warning: str |
     risk_text = "\n".join(f"- {item}" for item in risk_items) if risk_items else "- No major risk flags from the verified sources."
     text = f"""Good morning. Key context for SPY trading today.
 
-SPY PROPHET LINES TODAY:
+SPY FORESIGHT STRUCTURE LINES:
 {lines}
 
 EXTERNAL FACTORS AFFECTING THESE LINES:
@@ -3053,6 +3173,7 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
     whales = premium_flow_payload(options_intel)
     flow = whales.get("flow_alerts") or {}
     recent_flow = whales.get("recent_flow") or {}
+    contract_liquidity = whales.get("contract_liquidity") or {}
     tide = whales.get("market_tide") or {}
     net_premium = whales.get("net_premium_ticks") or {}
     volume = whales.get("options_volume") or {}
@@ -3104,6 +3225,16 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
         elif pc_ratio <= 0.80:
             score += 1
             reasons.append(f"volume put/call is call-heavy at {fmt_float(pc_ratio)}")
+
+    if isinstance(contract_liquidity, dict):
+        call_liq = _finite_float(contract_liquidity.get("call_volume"), 0.0) + _finite_float(contract_liquidity.get("call_open_interest"), 0.0)
+        put_liq = _finite_float(contract_liquidity.get("put_volume"), 0.0) + _finite_float(contract_liquidity.get("put_open_interest"), 0.0)
+        if call_liq > put_liq * 1.25 and call_liq > 0:
+            score += 1
+            reasons.append("nearby contract liquidity favors calls")
+        elif put_liq > call_liq * 1.25 and put_liq > 0:
+            score -= 1
+            reasons.append("nearby contract liquidity favors puts")
 
     net_gex = _finite_float(gex.get("net_gex"))
     gamma_note = ""
@@ -3269,6 +3400,7 @@ def external_level_rows(options: OptionsIntelligence | None) -> list[dict]:
     recent = whales.get("recent_flow") or {}
     gex = whales.get("gex") or {}
     darkpool = whales.get("darkpool") or {}
+    contract_liquidity = whales.get("contract_liquidity") or {}
     if isinstance(gex, dict):
         for row in gex.get("levels") or []:
             if not isinstance(row, dict):
@@ -3323,11 +3455,29 @@ def external_level_rows(options: OptionsIntelligence | None) -> list[dict]:
             )
             if level:
                 rows.append(level)
+    if isinstance(contract_liquidity, dict):
+        for row in contract_liquidity.get("liquid_strikes") or []:
+            if not isinstance(row, dict):
+                continue
+            call_liquidity = _finite_float(row.get("call_volume"), 0.0) + _finite_float(row.get("call_open_interest"), 0.0)
+            put_liquidity = _finite_float(row.get("put_volume"), 0.0) + _finite_float(row.get("put_open_interest"), 0.0)
+            side = "CALL" if call_liquidity > put_liquidity else "PUT" if put_liquidity > call_liquidity else None
+            magnitude = max(call_liquidity, put_liquidity, _finite_float(row.get("liquidity_score"), 0.0))
+            level = _external_level_row(
+                "Contract Liquidity",
+                row.get("strike"),
+                f"{display_state_label(side) if side else 'balanced'} liquidity {fmt_float(magnitude, 0)}",
+                0.85,
+                side,
+                magnitude,
+            )
+            if level:
+                rows.append(level)
     return rows
 
 
 def _level_threshold(source: str) -> float:
-    if source in {"Option Flow", "Recent Flow", "Call Wall", "Put Wall"}:
+    if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall"}:
         return 2.5
     if source == "Max Pain":
         return 1.75
@@ -3381,7 +3531,7 @@ def structure_external_scenarios(bundle: MorningBriefingBundle) -> list[dict]:
             level_side = str(hit.get("side") or "").upper()
             distance_text = fmt_price(hit.get("distance"))
             detail = str(hit.get("detail") or source)
-            if source in {"Option Flow", "Recent Flow", "Call Wall", "Put Wall"} and level_side in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
+            if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall"} and level_side in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
                 if level_side == side:
                     score += _finite_float(hit.get("weight"), 1.0)
                     support.append(f"{source} aligns at {fmt_price(hit.get('price'))}, {distance_text} from trigger.")
@@ -3643,6 +3793,7 @@ def premium_flow_strike_candidates(options_intel: OptionsIntelligence | None, op
     whales = premium_flow_payload(options_intel)
     flow = whales.get("flow_alerts") or {}
     recent_flow = whales.get("recent_flow") or {}
+    contract_liquidity = whales.get("contract_liquidity") or {}
     if reference_price is None or pd.isna(reference_price):
         return []
     option_type = str(option_type).upper()
@@ -3679,6 +3830,17 @@ def premium_flow_strike_candidates(options_intel: OptionsIntelligence | None, op
                 candidates.append((strike, call_premium))
             if option_type == "PUT" and put_premium > call_premium and put_premium > 0:
                 candidates.append((strike, put_premium))
+    if isinstance(contract_liquidity, dict):
+        key = "top_calls" if option_type == "CALL" else "top_puts"
+        for row in contract_liquidity.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            strike = _strike_key(row.get("strike"))
+            if strike is None:
+                continue
+            liquidity = _finite_float(row.get("liquidity_score"), 0.0)
+            if liquidity > 0:
+                candidates.append((strike, liquidity))
 
     valid = []
     for strike, premium in candidates:
@@ -4627,6 +4789,10 @@ def inject_global_css() -> None:
     .option-quote-main{align-items:flex-start}.option-quote-mark{text-align:left}.quote-meta-row,.flow-level,.source-ledger-head,.evidence-head,.action-brief-head,.flow-board-head,.ai-verify-head,.morning-narrative-head{align-items:flex-start}
     [data-testid="stAlert"]{border-radius:8px;border:1px solid rgba(245,196,81,.26);background:rgba(245,196,81,.08);overflow-wrap:anywhere}
     [data-testid="stAlert"] p{font-size:.86rem;line-height:1.4}
+    [data-testid="stDataFrame"]{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:rgba(13,19,29,.72)}
+    [data-testid="stDataFrame"] *{font-family:var(--ui-font)}
+    div[data-testid="stDownloadButton"] button,div[data-testid="stButton"] button{border-radius:8px;border:1px solid rgba(103,183,255,.28);background:rgba(16,24,38,.86);font-weight:760}
+    div[data-testid="stDownloadButton"] button:hover,div[data-testid="stButton"] button:hover{border-color:rgba(103,183,255,.58);background:rgba(103,183,255,.12)}
     div[data-baseweb="tab-list"]{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px)}
     div[data-baseweb="tab-list"] button[role="tab"]{height:auto;min-height:44px;flex:1 1 0;min-width:112px;scroll-snap-align:start}
     div[data-baseweb="tab-list"] button[role="tab"] p{overflow:hidden;text-overflow:ellipsis}
@@ -4698,7 +4864,7 @@ def render_signal_badge(text, kind="neutral"):
 
 def render_signal_card(signal):
     if signal is None:
-        st.info("No confirmed rejection at primary structure.")
+        render_data_notice("No confirmed rejection at primary structure.", tone="info")
         return
     kind = "call" if signal.signal_type=="CALL" else "put"
     render_signal_badge(f"{signal.signal_type} {signal.status}", kind)
@@ -4706,11 +4872,11 @@ def render_signal_card(signal):
 
 
 def render_header_ticker(current_price, bias_state, closest_line, latest_signal, selected_strikes, provider_status="TASTYTRADE"):
-    txt = f"SPY {_fmt_num(current_price)} • BIAS {bias_state.bias if bias_state else 'N/A'} • CLOSEST {display_line_name(closest_line.name) if closest_line else 'N/A'} • SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} • C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} • PROVIDER {provider_status}"
+    txt = f"SPY {_fmt_num(current_price)} | BIAS {bias_state.bias if bias_state else 'N/A'} | CLOSEST {display_line_name(closest_line.name) if closest_line else 'N/A'} | SIG {(latest_signal.signal_type+' '+latest_signal.status) if latest_signal else 'NONE'} | C {selected_strikes.call_strike if selected_strikes else '-'} / P {selected_strikes.put_strike if selected_strikes else '-'} | PROVIDER {provider_status}"
     st.markdown(f"<div class='metric-card ticker-scroll'><div class='ticker-track'>{txt} &nbsp;&nbsp;&nbsp; {txt}</div></div>", unsafe_allow_html=True)
 
 
-def render_warning_panel(message): st.warning(message)
+def render_warning_panel(message): render_data_notice(message, tone="warn")
 
 def render_data_notice(message: str, tone: str = "info") -> None:
     cls = "warn" if tone == "warn" else "info"
@@ -5709,6 +5875,7 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
     net_premium = whales.get("net_premium_ticks") or {}
     darkpool = whales.get("darkpool") or {}
     volume = whales.get("options_volume") or {}
+    contract_liquidity = whales.get("contract_liquidity") or {}
     bias = str(flow.get("flow_bias") or recent_flow.get("tone") or net_premium.get("tone") or tide.get("tone") or "Flow context active")
     net_pressure = flow.get("net_premium_pressure")
     if (net_pressure is None or pd.isna(_finite_float(net_pressure))) and isinstance(recent_flow, dict):
@@ -5739,12 +5906,14 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
         chips.append(str(tide.get("tone")))
     if isinstance(volume, dict) and not pd.isna(_finite_float(volume.get("put_call_volume_ratio"))):
         chips.append(f"Vol P/C {fmt_float(volume.get('put_call_volume_ratio'))}")
+    if isinstance(contract_liquidity, dict) and contract_liquidity.get("contract_count"):
+        chips.append(f"{contract_liquidity.get('contract_count')} contracts")
     if isinstance(darkpool, dict) and (darkpool.get("key_levels") or darkpool.get("largest_prints")):
         ranked = darkpool_ranked_levels(darkpool, 1)
         if ranked:
             chips.append(f"Largest DP {fmt_price(ranked[0].get('price'))}")
     tone = "green" if "bull" in bias.lower() or "risk-on" in bias.lower() else "red" if "bear" in bias.lower() or "risk-off" in bias.lower() else "amber"
-    return value, copy, chips[:4], tone
+    return value, copy, chips[:5], tone
 
 
 def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str, list[str], str] | None:
@@ -5757,7 +5926,8 @@ def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str
     flip = gex.get("gamma_flip")
     value = f"Flip {fmt_price(flip)}" if flip is not None and not pd.isna(_finite_float(flip)) else str(gex.get("dealer_tone") or "GEX active")
     levels = [row for row in (gex.get("levels") or []) if isinstance(row, dict)]
-    copy = "Dealer hedging context from spot GEX by strike."
+    source = str(gex.get("source") or "spot")
+    copy = "Dealer hedging context from spot GEX by strike." if source == "spot" else "Dealer hedging context from static GEX by strike."
     if levels:
         copy = "Largest GEX strike " + fmt_price(levels[0].get("strike"), 0) + "; use as magnet/volatility context."
     chips = [f"{fmt_price(row.get('strike'), 0)} {fmt_money_short(row.get('total_gex'))}" for row in levels[:3]]
@@ -5771,11 +5941,11 @@ def order_flow_plain_english(options: OptionsIntelligence) -> dict:
     score = int(read.get("score") or 0)
     if side == "CALL":
         label = "Flow supports calls"
-        action = "Call setups get extra support, but only after SPY Prophet confirms at a trigger."
+        action = "Call setups get extra support only after price confirms at a structure trigger."
         tone = "call"
     elif side == "PUT":
         label = "Flow supports puts"
-        action = "Put setups get extra support, but only after SPY Prophet confirms at a trigger."
+        action = "Put setups get extra support only after price confirms at a structure trigger."
         tone = "put"
     elif side == "MIXED":
         label = "Flow is mixed"
@@ -5850,6 +6020,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
     tide = whales.get("market_tide") or {}
     premium = whales.get("net_premium_ticks") or {}
     volume = whales.get("options_volume") or {}
+    contract_liquidity = whales.get("contract_liquidity") or {}
     if any(isinstance(row, dict) and row for row in [tide, premium, volume]):
         cards.append({
             "title": "Market Tide",
@@ -5861,6 +6032,27 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
                 {"label": "Put net", "value": fmt_money_short(premium.get("net_put_premium") or tide.get("net_put_premium"))},
             ],
             "tone": "bull" if "call" in str(premium.get("tone", "")).lower() or "risk-on" in str(tide.get("tone", "")).lower() else "bear" if "put" in str(premium.get("tone", "")).lower() or "risk-off" in str(tide.get("tone", "")).lower() else "",
+        })
+    if isinstance(contract_liquidity, dict) and contract_liquidity.get("contract_count"):
+        top_call = next((row for row in contract_liquidity.get("top_calls") or [] if isinstance(row, dict)), None)
+        top_put = next((row for row in contract_liquidity.get("top_puts") or [] if isinstance(row, dict)), None)
+        levels = [
+            {"label": "Top call", "value": f"{fmt_price(top_call.get('strike'), 0)}" if top_call else "-"},
+            {"label": "Top put", "value": f"{fmt_price(top_put.get('strike'), 0)}" if top_put else "-"},
+        ]
+        for row in (contract_liquidity.get("liquid_strikes") or [])[:3]:
+            if isinstance(row, dict):
+                levels.append({"label": fmt_price(row.get("strike"), 0), "value": fmt_float(row.get("liquidity_score"), 0)})
+        call_liq = _finite_float(contract_liquidity.get("call_volume"), 0.0) + _finite_float(contract_liquidity.get("call_open_interest"), 0.0)
+        put_liq = _finite_float(contract_liquidity.get("put_volume"), 0.0) + _finite_float(contract_liquidity.get("put_open_interest"), 0.0)
+        tone = "bull" if call_liq > put_liq * 1.15 else "bear" if put_liq > call_liq * 1.15 else ""
+        cards.append({
+            "title": "Contract Liquidity",
+            "value": f"{contract_liquidity.get('contract_count', 0)} near contracts",
+            "copy": f"Call liquidity {fmt_float(call_liq, 0)}; put liquidity {fmt_float(put_liq, 0)}.",
+            "means": "Liquidity identifies tradable nearby strikes. It improves contract selection, but it does not replace the structure trigger.",
+            "levels": levels,
+            "tone": tone,
         })
     darkpool = whales.get("darkpool") or {}
     if isinstance(darkpool, dict) and (darkpool.get("print_count") or darkpool.get("key_levels")):
@@ -5912,7 +6104,7 @@ def render_order_flow_board(options: OptionsIntelligence) -> None:
           <div class='flow-board-head'>
             <div>
               <div class='flow-board-title'>Order Flow Board</div>
-              <div class='flow-board-copy'>Options-flow context: OTM SPY alerts, recent tape, market tide, and dark-pool levels.</div>
+              <div class='flow-board-copy'>Premium market context: OTM SPY alerts, recent tape, market tide, contract liquidity, GEX, and dark-pool levels.</div>
             </div>
             {ui_icon('pulse', 'blue', 'md')}
           </div>
@@ -6363,10 +6555,11 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
     whale_flow = whales.get("flow_alerts", {}) if isinstance(whales, dict) else {}
     whale_recent = whales.get("recent_flow", {}) if isinstance(whales, dict) else {}
     whale_premium = whales.get("net_premium_ticks", {}) if isinstance(whales, dict) else {}
+    whale_coverage = premium_feed_coverage(whales)
     whale_detail = (
-        f"{whale_flow.get('alert_count', 0)} same-day SPY OTM alerts; {whale_flow.get('flow_bias', 'flow active')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
+        f"{whale_coverage.get('label')}; {whale_flow.get('alert_count', 0)} same-day SPY OTM alerts; {whale_flow.get('flow_bias', 'flow active')}; net pressure {fmt_money_short(whale_flow.get('net_premium_pressure'))}."
         if whale_flow
-        else f"Recent tape {whale_recent.get('tone')}; premium tape {whale_premium.get('tone')}."
+        else f"{whale_coverage.get('label')}; recent tape {whale_recent.get('tone')}; premium tape {whale_premium.get('tone')}."
         if whale_recent or whale_premium
         else "Order-flow context was not included in this assessment."
     )
@@ -6391,7 +6584,7 @@ def render_briefing_evidence_trail(bundle: MorningBriefingBundle, result: Mornin
         ("1", "Collect", "The engine gathers structure, options, technicals, news, macro, and learning stats."),
         ("2", "Package", "Those fields become the verified data bundle for the assessment engine."),
         ("3", "Scan", "When live synthesis is on, the engine can check current public sources."),
-        ("4", "Merge", "The recommendation must tie external context back to the four SPY Prophet lines."),
+        ("4", "Merge", "The recommendation must tie external context back to the four SPY Foresight structure lines."),
     ]
     step_html = "".join(
         f"<div class='evidence-step'><span class='evidence-step-num'>{num}</span><div class='evidence-step-title'>{escape(title)}</div><div class='evidence-step-copy'>{escape(copy)}</div></div>"
@@ -7442,7 +7635,7 @@ def render_daily_brief_explainer(bundle: MorningBriefingBundle, result: MorningB
         <div class='daily-guide'>
           <div class='daily-guide-head'>
             <div class='daily-guide-main'>
-              <div class='daily-guide-kicker'>Trader Translation</div>
+              <div class='daily-guide-kicker'>Session Guide</div>
               <div class='daily-guide-title'>What SPY Foresight Is Saying</div>
               <div class='daily-guide-copy'>{escape(guide["plain_read"])}</div>
             </div>
@@ -7457,7 +7650,7 @@ def render_daily_brief_explainer(bundle: MorningBriefingBundle, result: MorningB
             <div class='daily-guide-grid'>{''.join(_daily_guide_card(card) for card in guide["summary_cards"])}</div>
           </div>
           <div class='daily-guide-section'>
-            <div class='daily-guide-section-title'>Outside Context In Plain Terms</div>
+            <div class='daily-guide-section-title'>External Context</div>
             <div class='daily-guide-grid'>{''.join(_daily_guide_card(card) for card in verdict_cards)}</div>
           </div>
         </div>
@@ -7467,7 +7660,7 @@ def render_daily_brief_explainer(bundle: MorningBriefingBundle, result: MorningB
 
 
 def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("Daily Brief", "Plain-language guide for the current SPY Foresight assessment")
+    render_section_title("Daily Brief", "Actionable guide for the current SPY Foresight assessment")
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
         active_bundle = bundle
@@ -7476,7 +7669,7 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
         result = generate_morning_briefing(active_bundle, use_ai=False)
     cols = st.columns([0.58, 0.42])
     with cols[0]:
-        render_data_notice("Daily Brief translates SPY Foresight into a simple watch plan. It explains the level, confirmation rule, outside pressure, and invalidation.", tone="info")
+        render_data_notice("Daily Brief converts the current assessment into the level to monitor, the confirmation rule, outside pressure, and invalidation.", tone="info")
     with cols[1]:
         if st.button("Generate Daily Brief", type="primary", use_container_width=True, key="generate_daily_brief"):
             ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
@@ -7511,7 +7704,7 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
-    render_section_title("SPY Foresight", "Actionable same-day plan for today's SPY Prophet lines")
+    render_section_title("SPY Foresight", "Actionable same-day plan for the current structure lines")
     ai_ready = bool(get_secret_or_env("OPENAI_API_KEY"))
     active_bundle = st.session_state.get("morning_briefing_bundle")
     if not isinstance(active_bundle, MorningBriefingBundle) or pd.Timestamp(active_bundle.generated_at).date() != pd.Timestamp(bundle.generated_at).date():
@@ -8711,7 +8904,7 @@ def main() -> None:
     option_provider, provider_status = get_tastytrade_option_provider()
     option_state = None
     if df.empty:
-        st.warning("SPY market data is pending. Retry refresh or verify market-data provider status.")
+        render_data_notice("SPY market data is pending. Refresh data or verify the market-data provider status.", tone="warn")
     if not df.empty:
         latest_price = latest_price_for_session(df, selected_session_day, now_ct)
         signal_day = get_live_signal_day(df, now_ct)
@@ -8993,7 +9186,7 @@ def main() -> None:
             if replay_save_status["total"] == 0:
                 render_data_notice("No replay signals are available for the selected replay date.", tone="warn")
             else:
-                st.success(
+                render_data_notice(
                     f"Replay saved: {replay_save_status['inserted']} added, "
                     f"{replay_save_status['updated']} updated, {replay_save_status['skipped']} unchanged."
                 )
@@ -9039,7 +9232,7 @@ def main() -> None:
                     st.markdown("**Intermediate Targets**")
                     st.dataframe(secondary_view, use_container_width=True)
             else:
-                st.info("No projected structure available yet.")
+                render_data_notice("No projected structure available yet.", tone="info")
 
         with tabs["Signal Details"]:
             st.caption("Signal quality diagnostics for checking rejection quality.")
@@ -9055,9 +9248,9 @@ def main() -> None:
                     ("Action", q.action_label),
                 ])
                 if q.warnings:
-                    st.warning(", ".join(q.warnings).replace("_", " ").title())
+                    render_data_notice(", ".join(q.warnings).replace("_", " ").title(), tone="warn")
                 if q.strengths:
-                    st.success(", ".join(q.strengths).replace("_", " ").title())
+                    render_data_notice(", ".join(q.strengths).replace("_", " ").title(), tone="info")
             if signals:
                 signal_rows = []
                 for sg in signals[-5:]:
@@ -9075,7 +9268,7 @@ def main() -> None:
                     })
                 st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
             else:
-                st.info("No current-session rejection signals.")
+                render_data_notice("No current-session rejection signals.", tone="info")
 
         with tabs["Diagnostics"]:
             st.caption("Operational diagnostics for current session state.")
