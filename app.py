@@ -2910,7 +2910,13 @@ def normalize_tradingview_anchor_time(value) -> pd.Timestamp:
     ct = get_central_tz()
     ts = ts.tz_localize(ct) if ts.tzinfo is None else ts.tz_convert(ct)
     if ts.minute == 30:
-        return ts - pd.Timedelta(minutes=30)
+        # Yahoo's 60-minute RTH bars often arrive on half-hour timestamps. The
+        # strategy is calibrated to whole-hour TradingView anchors; keep the
+        # final partial RTH bar attached to 2 PM, and roll normal bars forward.
+        final_rth_bar = pd.Timestamp(ts.date(), tz=ct) + pd.Timedelta(hours=14, minutes=30)
+        if ts >= final_rth_bar:
+            return ts - pd.Timedelta(minutes=30)
+        return ts + pd.Timedelta(minutes=30)
     return ts
 
 

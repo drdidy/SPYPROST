@@ -36,6 +36,7 @@ def test_candle_color() -> None:
 
 def test_half_hour_anchor_normalizes_to_tradingview_hour() -> None:
     assert normalize_tradingview_anchor_time(_df([("2026-04-28T14:30:00", 0, 0, 0, 0)]).index[0]) == _df([("2026-04-28T14:00:00", 0, 0, 0, 0)]).index[0]
+    assert normalize_tradingview_anchor_time(_df([("2026-04-28T10:30:00", 0, 0, 0, 0)]).index[0]) == _df([("2026-04-28T11:00:00", 0, 0, 0, 0)]).index[0]
 
 
 def test_opening_half_hour_pivot_anchors_to_nine_am_tradingview_candle() -> None:
@@ -57,7 +58,7 @@ def test_high_pivot_found() -> None:
     ])
     p = find_high_pivot(df)
     assert p.price == 12
-    assert p.timestamp == df.index[1] - pd.Timedelta(minutes=30)
+    assert p.timestamp == df.index[1] + pd.Timedelta(minutes=30)
     assert p.fallback_used is False
     assert p.source == "session_high"
 
@@ -87,7 +88,7 @@ def test_newest_pattern_selected_for_high_and_low() -> None:
     ])
     hp = find_high_pivot(df)
     lp = find_low_pivot(df)
-    assert hp.timestamp == df.index[4] - pd.Timedelta(minutes=30)
+    assert hp.timestamp == df.index[4] + pd.Timedelta(minutes=30)
     assert lp.timestamp == df.index[6] - pd.Timedelta(minutes=30)
 
 
@@ -138,7 +139,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 12, 13, 11, 13),
     ])
     hp = find_high_pivot(high_no_pattern)
-    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[1] - pd.Timedelta(minutes=30)
+    assert not hp.fallback_used and hp.price == 15 and hp.timestamp == high_no_pattern.index[1] + pd.Timedelta(minutes=30)
 
     low_no_pattern = _df([
         ("2026-04-28T08:30:00", 10, 11, 8, 9),
@@ -146,7 +147,7 @@ def test_fallbacks() -> None:
         ("2026-04-28T10:30:00", 8, 9, 7, 7),
     ])
     lp = find_low_pivot(low_no_pattern)
-    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[1] - pd.Timedelta(minutes=30)
+    assert not lp.fallback_used and lp.price == 6 and lp.timestamp == low_no_pattern.index[1] + pd.Timedelta(minutes=30)
 
 
 def test_secondary_pivots() -> None:
@@ -164,8 +165,8 @@ def test_secondary_pivots() -> None:
     assert pivots[1].direction == "ascending" and pivots[1].price == 10.6
     assert pivots[2].direction == "descending" and pivots[2].price == 7.5
     assert pivots[0].timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
-    assert pivots[1].timestamp == _df([("2026-04-28T09:00:00", 0, 0, 0, 0)]).index[0]
-    assert pivots[2].timestamp == _df([("2026-04-28T12:00:00", 0, 0, 0, 0)]).index[0]
+    assert pivots[1].timestamp == _df([("2026-04-28T10:00:00", 0, 0, 0, 0)]).index[0]
+    assert pivots[2].timestamp == _df([("2026-04-28T13:00:00", 0, 0, 0, 0)]).index[0]
     assert [p.timestamp for p in pivots] == sorted([p.timestamp for p in pivots])
 
 
