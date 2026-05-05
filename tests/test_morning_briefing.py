@@ -40,6 +40,7 @@ from app import (
     summarize_unusual_whales_greeks,
     summarize_unusual_whales_net_premium_ticks,
     summarize_unusual_whales_recent_flow,
+    summarize_unusual_whales_whale_targets,
     unusual_whales_card_data,
     merge_citations,
     morning_decision_from_result,
@@ -637,8 +638,8 @@ def test_unusual_whales_gex_finds_flip_and_levels() -> None:
     summary = summarize_unusual_whales_gex(
         {
             "data": [
-                {"strike": "718", "call_gamma_oi": "100", "put_gamma_oi": "-300"},
-                {"strike": "720", "call_gamma_oi": "400", "put_gamma_oi": "-100"},
+                {"strike": "718", "call_gamma_oi": "100", "put_gamma_oi": "-300", "call_delta_oi": "1000", "put_delta_oi": "-2500"},
+                {"strike": "720", "call_gamma_oi": "400", "put_gamma_oi": "-100", "call_delta_oi": "3000", "put_delta_oi": "-1000"},
             ]
         },
         latest_price=719,
@@ -646,6 +647,8 @@ def test_unusual_whales_gex_finds_flip_and_levels() -> None:
 
     assert summary["gamma_flip"] == 719.0
     assert summary["levels"][0]["strike"] in {718.0, 720.0}
+    assert summary["net_dex"] == 500.0
+    assert summary["dex_levels"][0]["strike"] in {718.0, 720.0}
 
 
 def test_unusual_whales_recent_flow_summarizes_current_tape() -> None:
@@ -734,6 +737,26 @@ def test_unusual_whales_option_contracts_summarize_liquidity_near_spy() -> None:
     assert summary["liquid_strikes"][0]["strike"] in {716.0, 720.0}
 
 
+def test_unusual_whales_whale_targets_extracts_spy_hottest_contracts() -> None:
+    now = pd.Timestamp("2026-05-01 09:45", tz="America/Chicago")
+    summary = summarize_unusual_whales_whale_targets(
+        {
+            "data": [
+                {"ticker_symbol": "SPY", "type": "call", "strike": "720", "premium": "500000", "volume": "900", "open_interest": "200"},
+                {"ticker_symbol": "AAPL", "type": "call", "strike": "210", "premium": "900000"},
+            ]
+        },
+        {"data": [{"ticker_symbol": "SPY", "type": "put", "strike": "716", "premium": "900000", "volume": "1200"}]},
+        now,
+        latest_price=718,
+    )
+
+    assert summary is not None
+    assert summary["side"] == "PUT"
+    assert summary["target_count"] == 2
+    assert summary["top_targets"][0]["strike"] == 716.0
+
+
 def test_unusual_whales_gex_uses_static_when_spot_is_empty() -> None:
     merged = merge_unusual_whales_gex(
         {"data": []},
@@ -751,10 +774,11 @@ def test_premium_feed_coverage_counts_loaded_feeds() -> None:
             "flow_alerts": {"alert_count": 2},
             "contract_liquidity": {"contract_count": 4},
             "gex": {"levels": [{"strike": 720}]},
+            "whale_targets": {"target_count": 2},
         }
     )
 
-    assert coverage["loaded"] == 3
+    assert coverage["loaded"] == 4
     assert coverage["total"] >= 10
     assert "Premium feeds" in coverage["label"]
 
@@ -814,6 +838,7 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
             "market_tide": {"tone": "Risk-on options tide", "net_call_premium": 1200000, "net_put_premium": -300000},
             "net_premium_ticks": {"tone": "Call premium building", "net_premium": 900000, "net_call_premium": 1200000, "net_put_premium": -300000},
             "options_volume": {"put_call_volume_ratio": 0.8},
+            "whale_targets": {"tone": "Whale targets lean calls", "side": "CALL", "target_count": 2, "call_premium": 700000, "put_premium": 100000, "top_targets": [{"type": "CALL", "strike": 720, "premium": 500000}]},
             "contract_liquidity": {
                 "contract_count": 4,
                 "top_calls": [{"strike": 720, "liquidity_score": 1200}],
@@ -829,13 +854,14 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
                 "total_premium": 88_000_000,
                 "key_levels": [{"price": 719.5, "premium": 32_000_000}],
             },
+            "gex": {"levels": [{"strike": 720, "total_gex": -1_000_000, "total_dex": 250000}], "dex_levels": [{"strike": 720, "total_dex": 250000}], "net_gex": -1_000_000, "net_dex": 250000, "dealer_tone": "Volatile negative gamma"},
         },
     )
 
     cards = order_flow_board_cards(options)
     read = order_flow_plain_english(options)
 
-    assert {card["title"] for card in cards} >= {"Same-Day Flow Alerts", "Recent Tape", "Market Tide", "Contract Liquidity", "Dark Pool Levels"}
+    assert {card["title"] for card in cards} >= {"Same-Day Flow Alerts", "Recent Tape", "Market Net Flow", "Whale Targets", "Contract Liquidity", "Dealer Exposure", "Dark Pool Levels"}
     flow_card = next(card for card in cards if card["title"] == "Same-Day Flow Alerts")
     assert "supports call setups" in flow_card["means"]
     darkpool = next(card for card in cards if card["title"] == "Dark Pool Levels")
@@ -843,5 +869,9 @@ def test_order_flow_board_exposes_flow_and_darkpool_levels() -> None:
     assert "support or caution against an entry" in darkpool["means"]
     liquidity = next(card for card in cards if card["title"] == "Contract Liquidity")
     assert "contract selection" in liquidity["means"]
+    dealer = next(card for card in cards if card["title"] == "Dealer Exposure")
+    assert "DEX" in dealer["copy"]
+    targets = next(card for card in cards if card["title"] == "Whale Targets")
+    assert "structure trigger" in targets["means"]
     assert read["label"] == "Flow supports calls"
     assert read["tone"] == "call"

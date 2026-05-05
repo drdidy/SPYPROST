@@ -67,6 +67,7 @@ OPENAI_DEFAULT_MODEL = "gpt-4.1-mini"
 OPENAI_WEB_SEARCH_DEFAULT = "true"
 UNUSUAL_WHALES_BASE_URL = "https://api.unusualwhales.com"
 UNUSUAL_WHALES_TOKEN_KEYS = ("UNUSUAL_WHALES_API_KEY", "UNUSUAL_WHALES_REFRESH_TOKEN")
+UW_INDEX_CONTEXT_SYMBOLS = {SYMBOL, "SPX", "SPXW", "QQQ", "IWM"}
 CURATED_MORNING_SOURCES = [
     {"name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/default.htm", "role": "Official Fed press releases, monetary policy, and speeches"},
     {"name": "BLS", "url": "https://www.bls.gov/feed/", "role": "Official labor and inflation release feeds"},
@@ -1532,6 +1533,91 @@ def summarize_unusual_whales_darkpool(payload: dict | None, now_ct, latest_price
     }
 
 
+def merge_payload_rows(*payloads: dict | list | None) -> dict:
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for payload in payloads:
+        for row in payload_rows(payload):
+            key = str(row.get("id") or row.get("trade_id") or row.get("transaction_id") or "")
+            if not key:
+                key = "|".join(str(row.get(part) or "") for part in ("ticker", "symbol", "executed_at", "timestamp", "price", "size", "premium"))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return {"data": rows}
+
+
+def _uw_screener_symbol(row: dict) -> str:
+    symbol = str(row.get("ticker_symbol") or row.get("ticker") or row.get("underlying_symbol") or row.get("symbol") or "").upper()
+    if symbol:
+        return symbol
+    contract = str(row.get("option_symbol") or row.get("contract") or "").upper()
+    match = re.match(r"([A-Z]+)", contract)
+    return match.group(1) if match else ""
+
+
+def summarize_unusual_whales_whale_targets(call_payload: dict | None, put_payload: dict | None, now_ct, latest_price: float | None = None) -> dict | None:
+    rows = []
+    for payload, fallback_type in [(call_payload, "CALL"), (put_payload, "PUT")]:
+        for row in payload_rows(payload):
+            symbol = _uw_screener_symbol(row)
+            if symbol not in UW_INDEX_CONTEXT_SYMBOLS:
+                continue
+            timestamp_keys = ("created_at", "updated_at", "timestamp", "time", "date")
+            has_timestamp = any(row.get(key) for key in timestamp_keys)
+            if has_timestamp and not row_is_current_for_0dte(row, now_ct, timestamp_keys):
+                continue
+            option_type = _option_row_type(row)
+            if option_type not in {"CALL", "PUT"}:
+                option_type = fallback_type
+            strike = _strike_key(row.get("strike"))
+            if strike is None:
+                continue
+            premium = _row_trade_premium(row)
+            volume = _finite_float(row.get("volume") or row.get("vol") or row.get("total_volume"), 0.0)
+            open_interest = _finite_float(row.get("open_interest") or row.get("openInterest") or row.get("oi"), 0.0)
+            vol_oi = _finite_float(row.get("volume_oi_ratio") or row.get("vol_oi_ratio") or row.get("volume_to_oi"))
+            distance = abs(strike - float(latest_price)) if latest_price is not None and not pd.isna(latest_price) else float("nan")
+            rows.append({
+                "symbol": symbol,
+                "type": option_type,
+                "strike": strike,
+                "premium": premium,
+                "volume": volume,
+                "open_interest": open_interest,
+                "volume_oi_ratio": None if pd.isna(vol_oi) else vol_oi,
+                "distance": None if pd.isna(distance) else distance,
+                "expiration": row.get("expiry") or row.get("expiration") or row.get("expiration_date"),
+            })
+    if not rows:
+        return None
+    spy_rows = [row for row in rows if row["symbol"] == SYMBOL]
+    target_rows = spy_rows or rows
+    call_premium = sum(_finite_float(row.get("premium"), 0.0) for row in target_rows if row.get("type") == "CALL")
+    put_premium = sum(_finite_float(row.get("premium"), 0.0) for row in target_rows if row.get("type") == "PUT")
+    if call_premium > put_premium * 1.2 and call_premium > 0:
+        tone = "Whale targets lean calls"
+        side = "CALL"
+    elif put_premium > call_premium * 1.2 and put_premium > 0:
+        tone = "Whale targets lean puts"
+        side = "PUT"
+    else:
+        tone = "Whale targets are balanced"
+        side = "MIXED"
+    top_targets = sorted(target_rows, key=lambda row: (_finite_float(row.get("premium"), 0.0), _finite_float(row.get("volume"), 0.0)), reverse=True)[:8]
+    return {
+        "tone": tone,
+        "side": side,
+        "target_count": len(target_rows),
+        "market_context_count": len(rows),
+        "call_premium": call_premium,
+        "put_premium": put_premium,
+        "top_targets": top_targets,
+        "as_of": str(pd.Timestamp(now_ct)),
+    }
+
+
 def uw_news_row_is_spy_relevant(row: dict) -> bool:
     tickers = row.get("tickers") or row.get("symbols") or row.get("ticker") or row.get("symbol")
     if isinstance(tickers, list):
@@ -1576,8 +1662,25 @@ def summarize_unusual_whales_gex(payload: dict | None, latest_price: float | Non
             continue
         call_gex = _finite_float(row.get("call_gex"), _finite_float(row.get("call_gamma_oi"), 0.0))
         put_gex = _finite_float(row.get("put_gex"), _finite_float(row.get("put_gamma_oi"), 0.0))
+        call_dex = _finite_float(
+            row.get("call_dex"),
+            _finite_float(row.get("call_delta_oi"), _finite_float(row.get("call_delta_exposure"), 0.0)),
+        )
+        put_dex = _finite_float(
+            row.get("put_dex"),
+            _finite_float(row.get("put_delta_oi"), _finite_float(row.get("put_delta_exposure"), 0.0)),
+        )
         total = call_gex + put_gex
-        rows.append({"strike": strike, "total_gex": total, "call_gex": call_gex, "put_gex": put_gex})
+        total_dex = call_dex + put_dex
+        rows.append({
+            "strike": strike,
+            "total_gex": total,
+            "call_gex": call_gex,
+            "put_gex": put_gex,
+            "total_dex": total_dex,
+            "call_dex": call_dex,
+            "put_dex": put_dex,
+        })
     if latest_price is not None and not pd.isna(latest_price):
         rows = [row for row in rows if abs(row["strike"] - float(latest_price)) <= 35] or rows
     rows = sorted(rows, key=lambda row: row["strike"])
@@ -1591,8 +1694,19 @@ def summarize_unusual_whales_gex(payload: dict | None, latest_price: float | Non
             break
     ranked = sorted(rows, key=lambda row: abs(row["total_gex"]), reverse=True)[:6]
     net = sum(row["total_gex"] for row in rows)
+    net_dex = sum(row.get("total_dex", 0.0) for row in rows)
     tone = "Stabilizing positive gamma" if net > 0 else "Volatile negative gamma" if net < 0 else "Neutral gamma"
-    return {"gamma_flip": gamma_flip, "dealer_tone": tone, "levels": ranked, "net_gex": net}
+    dex_tone = "Call-side dealer delta" if net_dex > 0 else "Put-side dealer delta" if net_dex < 0 else "Balanced dealer delta"
+    dex_ranked = sorted(rows, key=lambda row: abs(row.get("total_dex", 0.0)), reverse=True)[:6]
+    return {
+        "gamma_flip": gamma_flip,
+        "dealer_tone": tone,
+        "levels": ranked,
+        "dex_levels": dex_ranked,
+        "net_gex": net,
+        "net_dex": net_dex,
+        "dex_tone": dex_tone,
+    }
 
 
 def merge_unusual_whales_gex(spot_payload: dict | None, static_payload: dict | None, latest_price: float | None = None) -> dict:
@@ -1624,6 +1738,7 @@ def premium_feed_coverage(whales: dict | None) -> dict:
         "gex": bool((whales.get("gex") or {}).get("levels")),
         "greeks": bool(whales.get("greeks")),
         "darkpool": bool(whales.get("darkpool")),
+        "whale_targets": bool(whales.get("whale_targets")),
         "news": bool(whales.get("fresh_news")),
     }
     loaded = sum(1 for value in checks.values() if value)
@@ -1681,6 +1796,33 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     darkpool_payload, err = fetch_unusual_whales_json(f"/api/darkpool/{SYMBOL}")
     if err:
         errors.append(err)
+    market_darkpool_payload, err = fetch_unusual_whales_json("/api/darkpool/recent")
+    if err:
+        errors.append(err)
+    whale_call_payload, err = fetch_unusual_whales_json(
+        "/api/screener/option-contracts",
+        (
+            ("limit", 100),
+            ("min_premium", 250000),
+            ("type", "Calls"),
+            ("is_otm", True),
+            ("min_volume_oi_ratio", 1),
+        ),
+    )
+    if err:
+        errors.append(err)
+    whale_put_payload, err = fetch_unusual_whales_json(
+        "/api/screener/option-contracts",
+        (
+            ("limit", 100),
+            ("min_premium", 250000),
+            ("type", "Puts"),
+            ("is_otm", True),
+            ("min_volume_oi_ratio", 1),
+        ),
+    )
+    if err:
+        errors.append(err)
     news_payload, err = fetch_unusual_whales_json("/api/news/headlines")
     if err:
         errors.append(err)
@@ -1691,14 +1833,15 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
     volume = summarize_unusual_whales_options_volume(options_volume_payload, now)
     iv = summarize_unusual_whales_iv(iv_payload)
     contract_liquidity = summarize_unusual_whales_option_contracts(contract_payload, expiration_date, latest_price)
-    darkpool = summarize_unusual_whales_darkpool(darkpool_payload, now, latest_price)
+    darkpool = summarize_unusual_whales_darkpool(merge_payload_rows(darkpool_payload, market_darkpool_payload), now, latest_price)
     gex = merge_unusual_whales_gex(gex_payload, static_gex_payload, latest_price)
     greeks = summarize_unusual_whales_greeks(greeks_payload, expiration_date, latest_price)
+    whale_targets = summarize_unusual_whales_whale_targets(whale_call_payload, whale_put_payload, now, latest_price)
     uw_news_rows = [
         row for row in payload_rows(news_payload)
         if uw_news_row_is_spy_relevant(row) and row_is_current_for_0dte(row, now, ("created_at", "published_at", "timestamp", "time", "date"))
     ][:5]
-    has_data = bool(flow["alert_count"] or recent_flow or tide or net_premium or volume or iv or contract_liquidity or darkpool or uw_news_rows or gex.get("levels") or greeks)
+    has_data = bool(flow["alert_count"] or recent_flow or tide or net_premium or volume or iv or contract_liquidity or darkpool or whale_targets or uw_news_rows or gex.get("levels") or greeks)
     if not has_data:
         detail = "Premium order-flow feed is connected, but no current same-day SPY rows returned yet."
         if errors:
@@ -1715,6 +1858,7 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         "interpolated_iv": iv,
         "contract_liquidity": contract_liquidity,
         "darkpool": darkpool,
+        "whale_targets": whale_targets,
         "fresh_news": [
             {
                 "title": row.get("title") or row.get("headline"),
@@ -1744,6 +1888,8 @@ def fetch_unusual_whales_intelligence(expiration_date, latest_price: float | Non
         bits.append("near-strike Greeks")
     if darkpool:
         bits.append("SPY dark-pool prints")
+    if whale_targets:
+        bits.append("market whale targets")
     coverage = premium_feed_coverage(payload)
     payload["coverage"] = coverage
     if coverage["total"]:
@@ -3331,6 +3477,7 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
     volume = whales.get("options_volume") or {}
     gex = whales.get("gex") or {}
     greeks = whales.get("greeks") or {}
+    whale_targets = whales.get("whale_targets") or {}
     score = 0
     reasons: list[str] = []
 
@@ -3388,11 +3535,23 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
             score -= 1
             reasons.append("nearby contract liquidity favors puts")
 
+    if isinstance(whale_targets, dict):
+        target_side = str(whale_targets.get("side") or "").upper()
+        if target_side == "CALL":
+            score += 1
+            reasons.append("high-premium whale targets lean calls")
+        elif target_side == "PUT":
+            score -= 1
+            reasons.append("high-premium whale targets lean puts")
+
     net_gex = _finite_float(gex.get("net_gex"))
+    net_dex = _finite_float(gex.get("net_dex"))
     gamma_note = ""
     if not pd.isna(net_gex):
         gamma_note = "positive gamma may dampen moves" if net_gex > 0 else "negative gamma can amplify breaks" if net_gex < 0 else "gamma is balanced"
         reasons.append(gamma_note)
+    if not pd.isna(net_dex) and abs(net_dex) > 0:
+        reasons.append("dealer delta leans call-side" if net_dex > 0 else "dealer delta leans put-side")
 
     nearest_greeks = greeks.get("nearest") if isinstance(greeks, dict) else None
     if isinstance(nearest_greeks, dict):
@@ -3423,6 +3582,7 @@ def premium_flow_direction(options_intel: OptionsIntelligence | None) -> dict:
         "recent_tone": recent_tone or None,
         "premium_tone": premium_tone or None,
         "gamma_note": gamma_note or None,
+        "whale_target_tone": whale_targets.get("tone") if isinstance(whale_targets, dict) else None,
     }
 
 
@@ -3600,18 +3760,37 @@ def external_level_rows(options: OptionsIntelligence | None) -> list[dict]:
     gex = whales.get("gex") or {}
     darkpool = whales.get("darkpool") or {}
     contract_liquidity = whales.get("contract_liquidity") or {}
+    whale_targets = whales.get("whale_targets") or {}
     if isinstance(gex, dict):
         for row in gex.get("levels") or []:
             if not isinstance(row, dict):
                 continue
             total = _finite_float(row.get("total_gex"))
+            dex = _finite_float(row.get("total_dex"))
             signed = "positive" if total > 0 else "negative" if total < 0 else "neutral"
             level = _external_level_row(
                 "Dealer GEX",
                 row.get("strike"),
-                f"{signed} GEX {fmt_money_short(total)}",
+                f"{signed} GEX {fmt_money_short(total)}" + (f"; DEX {fmt_money_short(dex)}" if not pd.isna(dex) and dex else ""),
                 2.25,
                 magnitude=abs(_finite_float(total, 0.0)),
+            )
+            if level:
+                rows.append(level)
+        for row in gex.get("dex_levels") or []:
+            if not isinstance(row, dict):
+                continue
+            dex = _finite_float(row.get("total_dex"))
+            if pd.isna(dex) or dex == 0:
+                continue
+            side = "CALL" if dex > 0 else "PUT"
+            level = _external_level_row(
+                "Dealer DEX",
+                row.get("strike"),
+                f"{display_state_label(side)} delta exposure {fmt_money_short(dex)}",
+                1.35,
+                side,
+                abs(dex),
             )
             if level:
                 rows.append(level)
@@ -3672,11 +3851,28 @@ def external_level_rows(options: OptionsIntelligence | None) -> list[dict]:
             )
             if level:
                 rows.append(level)
+    if isinstance(whale_targets, dict):
+        for row in whale_targets.get("top_targets") or []:
+            if not isinstance(row, dict):
+                continue
+            side = str(row.get("type") or "").upper()
+            if side not in {"CALL", "PUT"}:
+                continue
+            level = _external_level_row(
+                "Whale Target",
+                row.get("strike"),
+                f"{display_state_label(side)} target {fmt_money_short(row.get('premium'))}",
+                1.45,
+                side,
+                row.get("premium"),
+            )
+            if level:
+                rows.append(level)
     return rows
 
 
 def _level_threshold(source: str) -> float:
-    if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall"}:
+    if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall", "Whale Target", "Dealer DEX"}:
         return 2.5
     if source == "Max Pain":
         return 1.75
@@ -3730,7 +3926,7 @@ def structure_external_scenarios(bundle: MorningBriefingBundle) -> list[dict]:
             level_side = str(hit.get("side") or "").upper()
             distance_text = fmt_price(hit.get("distance"))
             detail = str(hit.get("detail") or source)
-            if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall"} and level_side in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
+            if source in {"Option Flow", "Recent Flow", "Contract Liquidity", "Call Wall", "Put Wall", "Whale Target", "Dealer DEX"} and level_side in {"CALL", "PUT"} and side in {"CALL", "PUT"}:
                 if level_side == side:
                     score += _finite_float(hit.get("weight"), 1.0)
                     support.append(f"{source} aligns at {fmt_price(hit.get('price'))}, {distance_text} from trigger.")
@@ -3905,10 +4101,11 @@ def technical_context_direction(technical: TechnicalContext | None, latest_price
 def gamma_entry_alignment(options_intel: OptionsIntelligence | None, watch_side: str | None = None) -> dict:
     whales = premium_flow_payload(options_intel)
     gex = whales.get("gex") or {}
-    iv = whales.get("iv") or {}
+    iv = whales.get("interpolated_iv") or whales.get("iv") or {}
     if not isinstance(gex, dict) and not isinstance(iv, dict):
         return {"source": "Dealer GEX", "state": "neutral", "title": "GEX pending", "copy": "Dealer GEX/IV context pending."}
     net_gex = _finite_float(gex.get("net_gex") if isinstance(gex, dict) else None)
+    net_dex = _finite_float(gex.get("net_dex") if isinstance(gex, dict) else None)
     iv_value = _finite_float(iv.get("iv") if isinstance(iv, dict) else None)
     notes = []
     state = "neutral"
@@ -3922,6 +4119,11 @@ def gamma_entry_alignment(options_intel: OptionsIntelligence | None, watch_side:
             state = "opposes" if watch_side in {"CALL", "PUT"} else "neutral"
             title = "Positive GEX"
             notes.append("positive dealer GEX can pin or slow moves")
+    if not pd.isna(net_dex) and net_dex:
+        dex_side = "CALL" if net_dex > 0 else "PUT"
+        if watch_side in {"CALL", "PUT"}:
+            state = "aligned" if dex_side == watch_side and state != "opposes" else "opposes" if dex_side != watch_side and state == "neutral" else state
+        notes.append(f"dealer DEX leans {display_state_label(dex_side).lower()}")
     if not pd.isna(iv_value):
         notes.append(f"IV {fmt_pct(iv_value * 100, 0)}")
     return {"source": "Dealer GEX", "state": state, "title": title, "copy": "; ".join(notes) + "." if notes else "GEX context is balanced."}
@@ -3992,6 +4194,9 @@ def premium_flow_tags(options_intel: OptionsIntelligence | None) -> list[str]:
     gamma = str(read.get("gamma_note") or "").upper().replace(" ", "_")
     if gamma:
         tags.append(gamma[:40])
+    targets = str(read.get("whale_target_tone") or "").upper().replace(" ", "_")
+    if targets:
+        tags.append(targets[:40])
     return tags
 
 
@@ -6137,6 +6342,7 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
     darkpool = whales.get("darkpool") or {}
     volume = whales.get("options_volume") or {}
     contract_liquidity = whales.get("contract_liquidity") or {}
+    whale_targets = whales.get("whale_targets") or {}
     bias = str(flow.get("flow_bias") or recent_flow.get("tone") or net_premium.get("tone") or tide.get("tone") or "Flow context active")
     net_pressure = flow.get("net_premium_pressure")
     if (net_pressure is None or pd.isna(_finite_float(net_pressure))) and isinstance(recent_flow, dict):
@@ -6169,6 +6375,8 @@ def unusual_whales_card_data(options: OptionsIntelligence) -> tuple[str, str, li
         chips.append(f"Vol P/C {fmt_float(volume.get('put_call_volume_ratio'))}")
     if isinstance(contract_liquidity, dict) and contract_liquidity.get("contract_count"):
         chips.append(f"{contract_liquidity.get('contract_count')} contracts")
+    if isinstance(whale_targets, dict) and whale_targets.get("target_count"):
+        chips.append(f"{whale_targets.get('target_count')} whale targets")
     if isinstance(darkpool, dict) and (darkpool.get("key_levels") or darkpool.get("largest_prints")):
         ranked = darkpool_ranked_levels(darkpool, 1)
         if ranked:
@@ -6191,9 +6399,15 @@ def unusual_whales_gex_card_data(options: OptionsIntelligence) -> tuple[str, str
     copy = "Dealer hedging context from spot GEX by strike." if source == "spot" else "Dealer hedging context from static GEX by strike."
     if levels:
         copy = "Largest GEX strike " + fmt_price(levels[0].get("strike"), 0) + "; use as magnet/volatility context."
-    chips = [f"{fmt_price(row.get('strike'), 0)} {fmt_money_short(row.get('total_gex'))}" for row in levels[:3]]
+    net_dex = _finite_float(gex.get("net_dex"))
+    if not pd.isna(net_dex) and net_dex:
+        copy += f" Dealer delta exposure reads {fmt_money_short(net_dex)}."
+    chips = [f"{fmt_price(row.get('strike'), 0)} GEX {fmt_money_short(row.get('total_gex'))}" for row in levels[:3]]
+    for row in (gex.get("dex_levels") or [])[:2]:
+        if isinstance(row, dict) and _finite_float(row.get("total_dex"), 0.0):
+            chips.append(f"{fmt_price(row.get('strike'), 0)} DEX {fmt_money_short(row.get('total_dex'))}")
     tone = "green" if _finite_float(gex.get("net_gex"), 0) > 0 else "red" if _finite_float(gex.get("net_gex"), 0) < 0 else "blue"
-    return value, copy, chips, tone
+    return value, copy, chips[:5], tone
 
 
 def order_flow_plain_english(options: OptionsIntelligence) -> dict:
@@ -6284,7 +6498,7 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
     contract_liquidity = whales.get("contract_liquidity") or {}
     if any(isinstance(row, dict) and row for row in [tide, premium, volume]):
         cards.append({
-            "title": "Market Tide",
+            "title": "Market Net Flow",
             "value": str(tide.get("tone") or premium.get("tone") or "Premium tape active"),
             "copy": f"Net premium {fmt_money_short(premium.get('net_premium'))}; volume P/C {fmt_float(volume.get('put_call_volume_ratio'))}.",
             "means": "Broad options pressure. Risk-on or call premium supports calls; risk-off, put premium, or high put/call warns against weak call entries.",
@@ -6293,6 +6507,25 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
                 {"label": "Put net", "value": fmt_money_short(premium.get("net_put_premium") or tide.get("net_put_premium"))},
             ],
             "tone": "bull" if "call" in str(premium.get("tone", "")).lower() or "risk-on" in str(tide.get("tone", "")).lower() else "bear" if "put" in str(premium.get("tone", "")).lower() or "risk-off" in str(tide.get("tone", "")).lower() else "",
+        })
+    whale_targets = whales.get("whale_targets") or {}
+    if isinstance(whale_targets, dict) and whale_targets.get("target_count"):
+        levels = []
+        for row in (whale_targets.get("top_targets") or [])[:5]:
+            if not isinstance(row, dict):
+                continue
+            levels.append({
+                "label": f"{display_state_label(row.get('type'))} {fmt_price(row.get('strike'), 0)}",
+                "value": fmt_money_short(row.get("premium")),
+            })
+        side = str(whale_targets.get("side") or "").upper()
+        cards.append({
+            "title": "Whale Targets",
+            "value": str(whale_targets.get("tone") or "Whale target scan active"),
+            "copy": f"{whale_targets.get('target_count', 0)} high-premium OTM SPY/index contracts; calls {fmt_money_short(whale_targets.get('call_premium'))}, puts {fmt_money_short(whale_targets.get('put_premium'))}.",
+            "means": "High-premium OTM contracts show where paid traders are concentrating. Useful near a structure trigger; ignore levels far away from SPY Prophet entries.",
+            "levels": levels,
+            "tone": "bull" if side == "CALL" else "bear" if side == "PUT" else "",
         })
     if isinstance(contract_liquidity, dict) and contract_liquidity.get("contract_count"):
         top_call = next((row for row in contract_liquidity.get("top_calls") or [] if isinstance(row, dict)), None)
@@ -6314,6 +6547,23 @@ def order_flow_board_cards(options: OptionsIntelligence) -> list[dict]:
             "means": "Liquidity identifies tradable nearby strikes. It improves contract selection, but it does not replace the structure trigger.",
             "levels": levels,
             "tone": tone,
+        })
+    gex = whales.get("gex") or {}
+    if isinstance(gex, dict) and (gex.get("levels") or gex.get("dex_levels") or not pd.isna(_finite_float(gex.get("net_gex")))):
+        levels = []
+        for row in (gex.get("levels") or [])[:3]:
+            if isinstance(row, dict):
+                levels.append({"label": f"GEX {fmt_price(row.get('strike'), 0)}", "value": fmt_money_short(row.get("total_gex"))})
+        for row in (gex.get("dex_levels") or [])[:3]:
+            if isinstance(row, dict) and _finite_float(row.get("total_dex"), 0.0):
+                levels.append({"label": f"DEX {fmt_price(row.get('strike'), 0)}", "value": fmt_money_short(row.get("total_dex"))})
+        cards.append({
+            "title": "Dealer Exposure",
+            "value": str(gex.get("dealer_tone") or "Dealer exposure active"),
+            "copy": f"GEX {fmt_money_short(gex.get('net_gex'))}; DEX {fmt_money_short(gex.get('net_dex'))}.",
+            "means": "GEX marks magnet or volatility zones. DEX adds directional dealer-hedging pressure. These levels support or caution entries only when they sit near a trigger.",
+            "levels": levels[:5],
+            "tone": "bull" if _finite_float(gex.get("net_dex"), 0.0) > 0 else "bear" if _finite_float(gex.get("net_dex"), 0.0) < 0 else "",
         })
     darkpool = whales.get("darkpool") or {}
     if isinstance(darkpool, dict) and (darkpool.get("print_count") or darkpool.get("key_levels")):
