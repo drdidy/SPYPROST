@@ -409,6 +409,7 @@ def ensure_central_index(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_index()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_spy_hourly(period: str = "10d") -> pd.DataFrame:
     raw = yf.download(tickers=SYMBOL, period=period, interval="60m", prepost=True, progress=False, auto_adjust=False, actions=False)
     return ensure_central_index(normalize_yfinance_frame(raw))
@@ -705,6 +706,7 @@ def economic_event_from_dict(raw: dict) -> EconomicEvent | None:
     )
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def load_economic_calendar(path: str = ECONOMIC_CALENDAR_PATH) -> list[EconomicEvent]:
     p = Path(path)
     if not p.exists():
@@ -934,10 +936,12 @@ def fetch_market_moves(tickers: dict[str, str], period: str = "5d", interval: st
     return moves
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_global_context() -> list[MarketMove]:
     return fetch_market_moves(GLOBAL_CONTEXT_TICKERS, period="5d", interval="1d")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_sector_context() -> list[MarketMove]:
     return sorted(fetch_market_moves(SECTOR_TICKERS, period="5d", interval="1d"), key=lambda m: m.change_pct if not pd.isna(m.change_pct) else -999, reverse=True)
 
@@ -985,6 +989,7 @@ def build_technical_context(daily_df: pd.DataFrame, latest_price: float | None, 
     )
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def option_chain_for_expiration(expiration_date) -> tuple[pd.DataFrame, pd.DataFrame, SourceStatus]:
     try:
         chain = yf.Ticker(SYMBOL).option_chain(str(expiration_date))
@@ -1056,6 +1061,7 @@ def selected_option_quote_summaries(option_state: OptionsCockpitState | None = N
     return out
 
 
+@st.cache_data(ttl=180, show_spinner=False)
 def fetch_external_json_payload(url_key: str, token_key: str | None = None) -> tuple[dict | None, SourceStatus]:
     url = get_secret_or_env(url_key)
     if not url:
