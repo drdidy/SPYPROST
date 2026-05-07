@@ -10578,6 +10578,20 @@ def main() -> None:
         elif not is_live_session:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
 
+        _ds_chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
+        try:
+            _ds_hp = pivots["high"] if 'pivots' in locals() else None
+            _ds_lp = pivots["low"] if 'pivots' in locals() else None
+            _ds_fig = build_prophet_chart(
+                _ds_chart_df, primary_lines, secondary_lines, _ds_hp, _ds_lp, secondary_pivots, signals, decision_state,
+                latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct),
+                show_secondary=True, show_signals=True, show_trade_overlays=True, show_pivots=True,
+                secondary_mode="nearest 6",
+            )
+            st.plotly_chart(_ds_fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as _ds_chart_err:
+            render_warning_panel(f"Chart build failed: {_ds_chart_err}")
+
         _ds_render_live_terminal(
             latest_price=latest_price,
             bias=bias,
@@ -10612,26 +10626,21 @@ def main() -> None:
         render_daily_brief_tab(morning_bundle)
 
     if _ds_selected_page == "Signal Log":
-        render_section_title("Prophet Chart", "Trigger map and candles")
-        chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
-        render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
-        cc1,cc2=st.columns([1.1,1])
-        chart_mode = cc1.selectbox("View", ["Decision Map", "Technical Candles"], index=0, key="chart_view_mode")
-        secondary_mode = cc2.selectbox("Targets", ["nearest 6","nearest 12","all"], index=0, key="chart_target_density")
-        show_secondary = True
-        show_signals = True
-        show_overlays = True
-        try:
-            hp = pivots["high"] if 'pivots' in locals() else None
-            lp = pivots["low"] if 'pivots' in locals() else None
-            if chart_mode == "Decision Map":
-                render_structure_map_svg(chart_df, primary_lines, secondary_lines, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), title="SPY Structure Map", subtitle=f"Active chart window 3:00 AM-6:00 PM CT; structure from {prior_day}", secondary_mode=secondary_mode)
-            else:
-                fig = build_prophet_chart(chart_df, primary_lines, secondary_lines, hp, lp, secondary_pivots, signals, decision_state, latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct), show_secondary=show_secondary, show_signals=show_signals, show_trade_overlays=show_overlays, show_pivots=True, secondary_mode=secondary_mode)
-                render_plotly_html(fig)
-                st.caption("Technical view: candlesticks, selected structure rails, signal markers, and trade overlays.")
-        except Exception as e:
-            render_warning_panel(f"Chart build failed: {e}")
+        _ds_journal_path = 'data/signal_journal.json'
+        _ds_entries = load_signal_journal(_ds_journal_path)
+        _ds_view = pd.DataFrame([journal_entry_to_dict(x) for x in _ds_entries]).tail(100)
+        if not _ds_view.empty:
+            if "line_name" in _ds_view.columns:
+                _ds_view["trigger"] = _ds_view["line_name"].map(display_line_name)
+                _ds_view = _ds_view.drop(columns=["line_name"])
+            if "target_line_name" in _ds_view.columns:
+                _ds_view["target"] = _ds_view["target_line_name"].map(display_line_name)
+                _ds_view = _ds_view.drop(columns=["target_line_name"])
+            if "rejection_time" in _ds_view.columns:
+                _ds_view = _ds_view.sort_values("rejection_time", ascending=False)
+            st.dataframe(_ds_view, use_container_width=True, height=620)
+        else:
+            render_data_notice("No signals logged yet. Confirmed rejections in the trade window will populate this list automatically when Auto-journal is on.")
 
     if _ds_selected_page == "Replay Lab":
         render_section_title("Replay Lab", "Review entries without look-ahead")
