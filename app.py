@@ -9500,6 +9500,206 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
     return entries, AutoJournalStatus(True,saved,updated,skipped,latest,[],"Auto-journal processed live signals.")
 
 
+def _ds_render_live_overview(
+    latest_price,
+    bias,
+    decision_state,
+    active_signal,
+    closest,
+    primary_lines,
+    structure_projection_time,
+    signals,
+    now_ct,
+) -> None:
+    """Spec-aligned Live overview: SPY price hero + 4-column KPI strip +
+    Today's Lines table (8 cols) + Recent Signals timeline (4 cols).
+
+    Visual-only — reads existing computed state, no new business logic.
+    """
+    from html import escape as _esc
+
+    price_text = fmt_price(latest_price) if latest_price is not None else "—"
+    proj_text = ""
+    if structure_projection_time is not None:
+        try:
+            proj_text = pd.Timestamp(structure_projection_time).strftime("%a %b %d, %I:%M %p CT").replace(" 0", " ")
+        except Exception:
+            proj_text = ""
+    sub = f"Projected to {proj_text}" if proj_text else "—"
+
+    st.markdown(
+        f"""
+        <div class="ds-hero">
+          <div class="ds-hero-label">SPY LAST</div>
+          <div class="ds-hero-value">{_esc(price_text)}</div>
+          <div class="ds-hero-sub">{_esc(sub)}</div>
+        </div>
+        <style>
+        .ds-hero{{background:#131C2E;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:32px 24px;margin-bottom:16px}}
+        .ds-hero-label{{color:#6B7B96;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px}}
+        .ds-hero-value{{font-family:"JetBrains Mono","Roboto Mono",monospace;font-size:48px;font-weight:700;color:#E8ECF4;line-height:1.1}}
+        .ds-hero-sub{{color:#6B7B96;font-size:12px;margin-top:8px;font-family:"JetBrains Mono","Roboto Mono",monospace}}
+        .ds-kpi{{background:#131C2E;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:20px;height:100%}}
+        .ds-kpi .ds-l{{color:#6B7B96;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px}}
+        .ds-kpi .ds-v{{font-size:22px;font-weight:700;line-height:1.2;color:#E8ECF4}}
+        .ds-kpi .ds-v.bull{{color:#22C55E}}
+        .ds-kpi .ds-v.bear{{color:#EF4444}}
+        .ds-kpi .ds-v.amber{{color:#F5B642}}
+        .ds-kpi .ds-v.muted{{color:#A0AEC8}}
+        .ds-kpi .ds-s{{color:#A0AEC8;font-size:12px;margin-top:8px;font-weight:500}}
+        .ds-panel{{background:#131C2E;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:20px 24px}}
+        .ds-panel-title{{color:#E8ECF4;font-size:14px;font-weight:600;margin-bottom:14px}}
+        .ds-line-row{{display:flex;justify-content:space-between;align-items:baseline;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-family:"JetBrains Mono","Roboto Mono",monospace;font-size:12px}}
+        .ds-line-row:last-child{{border-bottom:none}}
+        .ds-line-name{{color:#A0AEC8;font-weight:500}}
+        .ds-line-name.active{{color:#F5B642}}
+        .ds-line-val{{color:#E8ECF4;font-weight:600}}
+        .ds-line-dist{{color:#6B7B96;font-size:11px;margin-left:8px}}
+        .ds-sig-row{{padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}}
+        .ds-sig-row:last-child{{border-bottom:none}}
+        .ds-sig-head{{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;font-family:"JetBrains Mono","Roboto Mono",monospace}}
+        .ds-sig-type{{font-weight:700}}
+        .ds-sig-type.call{{color:#22C55E}}
+        .ds-sig-type.put{{color:#EF4444}}
+        .ds-sig-time{{color:#6B7B96}}
+        .ds-sig-meta{{color:#A0AEC8;font-size:11px;margin-top:4px}}
+        .ds-empty{{color:#6B7B96;font-size:13px;text-align:center;padding:24px 12px}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    bias_text = (bias.bias.title() if bias and bias.bias else "—")
+    bias_tone = "bull" if bias and "BULL" in (bias.bias or "").upper() else ("bear" if bias and "BEAR" in (bias.bias or "").upper() else "muted")
+    bias_sub = ""
+    if bias and bias.strength_score is not None and not pd.isna(bias.strength_score):
+        bias_sub = f"Strength {fmt_float(bias.strength_score, 1)}"
+    elif bias and bias.explanation:
+        bias_sub = bias.explanation[:60]
+
+    sig_text = "—"
+    sig_tone = "muted"
+    sig_sub = "No active signal"
+    if active_signal:
+        sig_text = active_signal.signal_type.title() if active_signal.signal_type else "—"
+        sig_tone = "bull" if active_signal.signal_type == "CALL" else ("bear" if active_signal.signal_type == "PUT" else "muted")
+        sig_sub = (active_signal.status or "").replace("_", " ").title() if active_signal.status else ""
+
+    grade_text = "—"
+    grade_sub = "Awaiting trigger"
+    grade_tone = "muted"
+    if decision_state and decision_state.signal_quality:
+        grade_text = decision_state.signal_quality.grade or "—"
+        score = decision_state.signal_quality.score
+        if score is not None and not pd.isna(score):
+            grade_sub = f"Score {fmt_float(score, 0)}"
+        if grade_text in ("A", "A+"):
+            grade_tone = "bull"
+        elif grade_text in ("D", "F"):
+            grade_tone = "bear"
+        elif grade_text in ("B", "C"):
+            grade_tone = "amber"
+
+    gate_text = "Wait"
+    gate_tone = "amber"
+    gate_sub = ""
+    if decision_state and decision_state.final_decision:
+        d = decision_state.final_decision.upper()
+        gate_text = decision_state.final_decision.title()
+        if "ENTER" in d or "EXECUTE" in d or "TAKE" in d:
+            gate_tone = "bull"
+        elif "EXIT" in d or "STOP" in d or "AVOID" in d:
+            gate_tone = "bear"
+        else:
+            gate_tone = "amber"
+        gate_sub = (decision_state.final_explanation or "")[:70]
+
+    def _kpi(label: str, value: str, tone: str, sub: str) -> str:
+        sub_html = f'<div class="ds-s">{_esc(sub)}</div>' if sub else ""
+        return (
+            f'<div class="ds-kpi">'
+            f'<div class="ds-l">{_esc(label)}</div>'
+            f'<div class="ds-v {tone}">{_esc(value)}</div>'
+            f'{sub_html}</div>'
+        )
+
+    cols = st.columns(4, gap="small")
+    cols[0].markdown(_kpi("BIAS", bias_text, bias_tone, bias_sub), unsafe_allow_html=True)
+    cols[1].markdown(_kpi("ACTIVE SIGNAL", sig_text, sig_tone, sig_sub), unsafe_allow_html=True)
+    cols[2].markdown(_kpi("DECISION GRADE", grade_text, grade_tone, grade_sub), unsafe_allow_html=True)
+    cols[3].markdown(_kpi("TRADE GATE", gate_text, gate_tone, gate_sub), unsafe_allow_html=True)
+
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+
+    left, right = st.columns([2, 1], gap="small")
+
+    closest_name = closest.name if closest else None
+    line_rows_html = []
+    for line in (primary_lines or [])[:6]:
+        try:
+            val = line.value_at(structure_projection_time) if structure_projection_time is not None else None
+        except Exception:
+            val = None
+        if val is None and getattr(line, "current_value", None) is not None:
+            val = line.current_value
+        active_cls = " active" if closest_name and line.name == closest_name else ""
+        dist_html = ""
+        if val is not None and latest_price is not None:
+            try:
+                dist = float(val) - float(latest_price)
+                arrow = "↑" if dist >= 0 else "↓"
+                dist_html = f'<span class="ds-line-dist">{arrow} {fmt_price(abs(dist))}</span>'
+            except Exception:
+                dist_html = ""
+        line_rows_html.append(
+            f'<div class="ds-line-row">'
+            f'<span class="ds-line-name{active_cls}">{_esc(display_line_name(line.name))}</span>'
+            f'<span><span class="ds-line-val">{_esc(fmt_price(val) if val is not None else "—")}</span>{dist_html}</span>'
+            f'</div>'
+        )
+    if not line_rows_html:
+        line_rows_html.append('<div class="ds-empty">Structure lines unavailable for this session.</div>')
+
+    left.markdown(
+        f'<div class="ds-panel"><div class="ds-panel-title">Today\'s Lines</div>'
+        + "".join(line_rows_html)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    sig_rows_html = []
+    recent = list(signals)[-5:][::-1] if signals else []
+    for s in recent:
+        sig_type = (getattr(s, "signal_type", "") or "").upper()
+        cls = "call" if sig_type == "CALL" else ("put" if sig_type == "PUT" else "")
+        try:
+            tstr = pd.Timestamp(getattr(s, "rejection_time", None)).strftime("%H:%M") if getattr(s, "rejection_time", None) else "—"
+        except Exception:
+            tstr = "—"
+        line_label = display_line_name(getattr(s, "line_name", "") or "")
+        status = (getattr(s, "status", "") or "").replace("_", " ").title()
+        sig_rows_html.append(
+            f'<div class="ds-sig-row">'
+            f'<div class="ds-sig-head">'
+            f'<span class="ds-sig-type {cls}">{_esc(sig_type or "—")}</span>'
+            f'<span class="ds-sig-time">{_esc(tstr)}</span>'
+            f'</div>'
+            f'<div class="ds-sig-meta">{_esc(line_label)} · {_esc(status or "—")}</div>'
+            f'</div>'
+        )
+    if not sig_rows_html:
+        sig_rows_html.append('<div class="ds-empty">No signals fired yet today.</div>')
+
+    right.markdown(
+        f'<div class="ds-panel"><div class="ds-panel-title">Recent Signals</div>'
+        + "".join(sig_rows_html)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+
+
 def main() -> None:
     st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
     inject_global_css()
@@ -9632,7 +9832,8 @@ def main() -> None:
         _ds_pill_label, _ds_pill_state = "Tastytrade • Degraded", "warn"
     else:
         _ds_pill_label, _ds_pill_state = "Tastytrade • Live", "live"
-    _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state)
+    _ds_clock_text = real_now_ct.strftime("%I:%M:%S %p CT").lstrip("0")
+    _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state, clock_text=_ds_clock_text)
 
     tab_names = ["Live", "SPY Foresight", "Daily Brief", "Market", "Chart", "Replay", "Options", "Journal"]
     if show_debug:
@@ -9644,21 +9845,19 @@ def main() -> None:
             render_data_notice(f"Next-session plan for {selected_session_day}. Structure is projected from the latest completed market data; live entries and option contracts remain unavailable until that session prints candles.", tone="warn")
         elif not is_live_session:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
-        render_terminal_hero(
-            latest_price,
-            bias,
-            decision_state,
-            closest,
-            active_signal,
-            strikes,
-            option_provider_label(option_state, provider_status),
-            now_ct,
-            df,
-            prior_day,
-            market_context,
-            primary_lines,
-            structure_projection_time,
+
+        _ds_render_live_overview(
+            latest_price=latest_price,
+            bias=bias,
+            decision_state=decision_state,
+            active_signal=active_signal,
+            closest=closest,
+            primary_lines=primary_lines,
+            structure_projection_time=structure_projection_time,
+            signals=signals,
+            now_ct=now_ct,
         )
+
         render_live_command_center(
             bias,
             decision_state,
@@ -9668,13 +9867,6 @@ def main() -> None:
             latest_price,
             morning_bundle.options_intelligence,
         )
-        render_status_strip([
-            ("Learning sample", learning_profile.confidence_label),
-            ("Matching outcomes", learning_profile.matching_sample_size),
-            ("TP1+ first", fmt_pct(learning_profile.target_first_rate * 100, 0)),
-            ("Stop first", fmt_pct(learning_profile.stop_first_rate * 100, 0)),
-        ])
-        render_structure_tiles(primary_lines, latest_price, structure_projection_time, closest, prior_day)
         if option_state:
             if option_state.entry_target_projection:
                 render_status_strip([

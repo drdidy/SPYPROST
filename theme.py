@@ -564,36 +564,24 @@ def status_pill(label: str, state: str = "neutral") -> str:
     )
 
 
-def render_app_header(title: str, pill_label: str, pill_state: str = "neutral") -> None:
-    """Render the top header bar: page title, status pill, ticking CT clock.
+def render_app_header(title: str, pill_label: str, pill_state: str = "neutral",
+                      clock_text: Optional[str] = None) -> None:
+    """Render the top header bar: page title, status pill, CT clock.
 
-    The clock is a self-contained client-side updater — it ticks every
-    second using the browser's `Intl.DateTimeFormat` set to America/Chicago,
-    so it stays accurate without a Streamlit rerun.
+    The clock is rendered server-side (Streamlit strips inline <script>
+    tags from st.markdown), so it shows the time at last rerun rather
+    than ticking every second. Pass `clock_text` formatted by the caller.
     """
     pill_html = status_pill(pill_label, pill_state)
+    clock_display = clock_text or "—"
     html = f"""
 <div class="app-header">
   <div class="app-title">{escape(title)}</div>
   <div class="app-meta">
     {pill_html}
-    <span class="app-clock" id="spy-prophet-ct-clock">--:--:-- CT</span>
+    <span class="app-clock">{escape(clock_display)}</span>
   </div>
 </div>
-<script>
-(function() {{
-  const el = document.getElementById('spy-prophet-ct-clock');
-  if (!el || el.dataset.bound === '1') return;
-  el.dataset.bound = '1';
-  const fmt = new Intl.DateTimeFormat('en-US', {{
-    timeZone: 'America/Chicago',
-    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
-  }});
-  function tick() {{ el.textContent = fmt.format(new Date()) + ' CT'; }}
-  tick();
-  setInterval(tick, 1000);
-}})();
-</script>
 """
     st.markdown(html, unsafe_allow_html=True)
 
