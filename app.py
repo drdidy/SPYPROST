@@ -9500,6 +9500,216 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
     return entries, AutoJournalStatus(True,saved,updated,skipped,latest,[],"Auto-journal processed live signals.")
 
 
+def _ds_render_analytics(entries, analytics) -> None:
+    """Mock-aligned Analytics page: 4 KPI cards + cumulative points line +
+    distribution by signal type + recent signals table.
+    """
+    import html as _h
+    from datetime import datetime as _dt
+
+    def _esc(x): return _h.escape("" if x is None else str(x))
+
+    df_entries = pd.DataFrame([journal_entry_to_dict(x) for x in entries])
+
+    last30_count = analytics.total_entries
+    if not df_entries.empty and "rejection_time" in df_entries.columns:
+        try:
+            df_entries["_ts"] = pd.to_datetime(df_entries["rejection_time"], errors="coerce")
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)
+            mask = df_entries["_ts"].dt.tz_localize(None) >= cutoff.tz_localize(None) if df_entries["_ts"].dt.tz is None else df_entries["_ts"] >= cutoff
+            last30_count = int(mask.fillna(False).sum())
+        except Exception:
+            pass
+
+    win_rate_pct = analytics.win_rate * 100 if not pd.isna(analytics.win_rate) else None
+    avg_capture = analytics.average_max_favorable_move if not pd.isna(analytics.average_max_favorable_move) else None
+
+    best_day_label = "—"; best_day_value = None
+    if not df_entries.empty and "estimated_profit_per_contract" in df_entries.columns and "rejection_time" in df_entries.columns:
+        try:
+            df_entries["_ts"] = pd.to_datetime(df_entries.get("rejection_time"), errors="coerce")
+            df_entries["_pnl"] = pd.to_numeric(df_entries.get("estimated_profit_per_contract"), errors="coerce")
+            grp = df_entries.dropna(subset=["_ts", "_pnl"]).groupby(df_entries["_ts"].dt.date)["_pnl"].sum()
+            if len(grp) > 0:
+                best_date = grp.idxmax()
+                best_day_value = float(grp.max())
+                best_day_label = best_date.strftime("%b %d") if hasattr(best_date, "strftime") else str(best_date)
+        except Exception:
+            pass
+
+    def _kpi(label, value, sub, tone="neutral"):
+        return (
+            f'<div class="ds-anal-kpi">'
+            f'<div class="ds-anal-l">{_esc(label)}</div>'
+            f'<div class="ds-anal-v ds-anal-{tone}">{_esc(value)}</div>'
+            f'<div class="ds-anal-s">{_esc(sub)}</div>'
+            f'</div>'
+        )
+
+    sl_value = f"{analytics.total_entries}"
+    sl_sub = f"last 30 days · {last30_count}"
+    if win_rate_pct is None:
+        hr_value, hr_sub, hr_tone = "—", "no data yet", "neutral"
+    else:
+        hr_value = f"{win_rate_pct:.0f}%"
+        hr_sub = f"{analytics.target_first_count}W · {analytics.stop_first_count}L"
+        hr_tone = "bull" if win_rate_pct >= 55 else "bear" if win_rate_pct < 45 else "neutral"
+    if avg_capture is None:
+        ac_value, ac_sub = "—", "pts per signal"
+    else:
+        ac_value = f"{avg_capture:.2f}"
+        ac_sub = "pts per signal"
+    if best_day_value is None:
+        bd_value, bd_sub, bd_tone = "—", "no closed days", "neutral"
+    else:
+        bd_value = f"{'+' if best_day_value >= 0 else ''}{best_day_value:.2f}"
+        bd_sub = best_day_label
+        bd_tone = "bull" if best_day_value >= 0 else "bear"
+
+    css = """
+    <style>
+    .ds-anal{background:#070C18;padding:8px 16px 24px;margin:-1rem -1rem 0;color:#A0AEC8;
+             font-family:'Inter',-apple-system,Segoe UI,sans-serif;}
+    .ds-anal *{box-sizing:border-box;}
+    .ds-anal-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px;}
+    .ds-anal-kpi{background:#0F1623;border:1px solid rgba(255,255,255,0.06);border-radius:8px;
+                 padding:22px 24px;}
+    .ds-anal-l{font-size:10px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;
+               color:#5A6479;margin-bottom:14px;}
+    .ds-anal-v{font-family:'Inter',sans-serif;font-size:38px;font-weight:700;line-height:1;
+               letter-spacing:-0.02em;color:#F4F7FB;}
+    .ds-anal-v.ds-anal-bull{color:#22C55E;}
+    .ds-anal-v.ds-anal-bear{color:#EF4444;}
+    .ds-anal-s{margin-top:14px;font-family:'JetBrains Mono','Roboto Mono',monospace;font-size:11px;
+               color:#6B7B96;letter-spacing:0.04em;}
+    .ds-anal-split{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:16px;}
+    .ds-anal-card{background:#0F1623;border:1px solid rgba(255,255,255,0.06);border-radius:8px;
+                  padding:22px 24px;}
+    .ds-anal-card .hd{display:flex;justify-content:space-between;align-items:baseline;
+                      margin-bottom:14px;}
+    .ds-anal-card .hd h3{font-size:14px;font-weight:600;color:#F4F7FB;margin:0;letter-spacing:-0.01em;}
+    .ds-anal-card .hd .meta{font-size:10px;font-weight:700;letter-spacing:0.16em;
+                            text-transform:uppercase;color:#5A6479;}
+    .ds-anal-bar{display:grid;grid-template-columns:140px 1fr 32px;gap:10px;align-items:center;
+                 padding:8px 0;font-size:12px;color:#A0AEC8;}
+    .ds-anal-bar-name{color:#E8ECF4;font-weight:500;}
+    .ds-anal-bar-track{height:6px;background:rgba(255,255,255,0.04);border-radius:99px;overflow:hidden;}
+    .ds-anal-bar-fill{height:100%;background:#F5B642;border-radius:99px;}
+    .ds-anal-bar-n{font-family:'JetBrains Mono',monospace;text-align:right;color:#E8ECF4;font-weight:600;}
+    .ds-anal-empty{color:#6B7B96;font-style:italic;font-size:13px;padding:20px 0;text-align:center;}
+    .ds-anal-table-card .hd{margin-bottom:6px;}
+    </style>
+    """
+
+    kpi_html = (
+        f'<div class="ds-anal-row">'
+        + _kpi("SIGNALS LOGGED", sl_value, sl_sub)
+        + _kpi("HIT RATE", hr_value, hr_sub, hr_tone)
+        + _kpi("AVG CAPTURE", ac_value, ac_sub)
+        + _kpi("BEST DAY", bd_value, bd_sub, bd_tone)
+        + '</div>'
+    )
+
+    cum_chart_html = ""
+    cum_meta = ""
+    try:
+        if not df_entries.empty and "estimated_profit_per_contract" in df_entries.columns:
+            cum_df = df_entries.dropna(subset=["_ts" if "_ts" in df_entries.columns else "rejection_time"]).copy()
+            if "_ts" not in cum_df.columns:
+                cum_df["_ts"] = pd.to_datetime(cum_df["rejection_time"], errors="coerce")
+            cum_df = cum_df.dropna(subset=["_ts"]).sort_values("_ts")
+            cum_df["_pnl"] = pd.to_numeric(cum_df.get("estimated_profit_per_contract", 0), errors="coerce").fillna(0)
+            if len(cum_df) > 1:
+                cum_df["_cum"] = cum_df["_pnl"].cumsum()
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=cum_df["_ts"], y=cum_df["_cum"],
+                    mode="lines", line=dict(color="#F5B642", width=2.5),
+                    fill="tozeroy", fillcolor="rgba(245,182,66,0.08)",
+                    hovertemplate="%{x|%b %d}<br>+%{y:.2f} pts<extra></extra>",
+                ))
+                fig.update_layout(
+                    height=320, margin=dict(l=20, r=20, t=8, b=24),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    xaxis=dict(showgrid=False, color="#5A6479",
+                               tickfont=dict(family="JetBrains Mono", size=10, color="#5A6479")),
+                    yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.04)",
+                               color="#5A6479", tickfont=dict(family="JetBrains Mono", size=10, color="#5A6479")),
+                    hoverlabel=dict(bgcolor="#1E2A44", bordercolor="rgba(255,255,255,0.12)",
+                                    font=dict(family="JetBrains Mono", size=11, color="#E8ECF4")),
+                    showlegend=False,
+                )
+                cum_total = cum_df["_cum"].iloc[-1]
+                cum_meta = f"{'+' if cum_total >= 0 else ''}{cum_total:.2f} PTS"
+            else:
+                cum_df = None
+                fig = None
+        else:
+            fig = None
+    except Exception:
+        fig = None
+
+    dist_html = ""
+    if analytics.by_signal_type:
+        try:
+            items = sorted(analytics.by_signal_type.items(), key=lambda x: -(x[1] if isinstance(x[1], (int,float)) else 0))
+            max_v = max((v for _, v in items if isinstance(v, (int,float))), default=1) or 1
+            rows = []
+            for k, v in items[:8]:
+                pct = max(0.04, (v / max_v))
+                rows.append(
+                    f'<div class="ds-anal-bar">'
+                    f'<span class="ds-anal-bar-name">{_esc(str(k))}</span>'
+                    f'<div class="ds-anal-bar-track"><div class="ds-anal-bar-fill" style="width:{pct*100:.1f}%"></div></div>'
+                    f'<span class="ds-anal-bar-n">{int(v)}</span>'
+                    f'</div>'
+                )
+            dist_html = "".join(rows)
+        except Exception:
+            dist_html = ""
+    if not dist_html:
+        dist_html = '<div class="ds-anal-empty">No distribution yet.</div>'
+
+    st.markdown(css + '<div class="ds-anal">' + kpi_html + '</div>', unsafe_allow_html=True)
+
+    left, right = st.columns([2, 1], gap="small")
+    with left:
+        st.markdown(
+            f'<div class="ds-anal-card"><div class="hd">'
+            f'<h3>Cumulative Points · 30D</h3><div class="meta">{_esc(cum_meta or "")}</div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.markdown('<div class="ds-anal-card"><div class="ds-anal-empty">Not enough closed signals to chart.</div></div>', unsafe_allow_html=True)
+    with right:
+        st.markdown(
+            f'<div class="ds-anal-card"><div class="hd">'
+            f'<h3>Distribution</h3><div class="meta">BY SIGNAL TYPE</div>'
+            f'</div>{dist_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="ds-anal-card ds-anal-table-card" style="margin-top:14px;"><div class="hd">'
+        '<h3>Recent Signals</h3><div class="meta">LAST 50</div></div></div>',
+        unsafe_allow_html=True,
+    )
+    journal_view = pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50)
+    if not journal_view.empty:
+        if "line_name" in journal_view.columns:
+            journal_view["trigger"] = journal_view["line_name"].map(display_line_name)
+            journal_view = journal_view.drop(columns=["line_name"])
+        if "target_line_name" in journal_view.columns:
+            journal_view["target"] = journal_view["target_line_name"].map(display_line_name)
+            journal_view = journal_view.drop(columns=["target_line_name"])
+        st.dataframe(journal_view, use_container_width=True)
+    else:
+        render_data_notice("No journal history yet.")
+
+
 def _ds_render_live_terminal(
     latest_price,
     bias,
@@ -10306,29 +10516,18 @@ def main() -> None:
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
 
-    _ds_missing_secrets = bool((provider_status or {}).get("missing_secrets"))
-    _ds_provider_error = bool((provider_status or {}).get("last_error"))
-    if _ds_missing_secrets:
-        _ds_pill_label, _ds_pill_state = "Tastytrade • Offline", "offline"
-    elif _ds_provider_error:
-        _ds_pill_label, _ds_pill_state = "Tastytrade • Degraded", "warn"
-    else:
-        _ds_pill_label, _ds_pill_state = "Tastytrade • Live", "live"
-    _ds_clock_text = real_now_ct.strftime("%I:%M:%S %p CT").lstrip("0")
-    _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state, clock_text=_ds_clock_text)
-
     _ds_nav_groups = [
-        ("ANALYSIS",     ["Live", "Chart", "Replay"]),
-        ("EXECUTION",    ["Options"]),
-        ("INTELLIGENCE", ["SPY Foresight", "Daily Brief", "Market"]),
-        ("JOURNAL",      ["Journal"]),
+        ("ANALYSIS",     ["Prophet Chart", "Replay Lab"]),
+        ("EXECUTION",    ["Options Cockpit"]),
+        ("INTELLIGENCE", ["Daily Brief", "SPY Foresight", "Order Flow"]),
+        ("JOURNAL",      ["Signal Log", "Analytics"]),
     ]
     if show_debug:
         _ds_nav_groups.append(("DIAGNOSTICS", ["Structure Details", "Signal Details", "Diagnostics"]))
 
     _ds_all_pages = [name for _, items in _ds_nav_groups for name in items]
     if "ds_active_page" not in st.session_state or st.session_state["ds_active_page"] not in _ds_all_pages:
-        st.session_state["ds_active_page"] = "Live"
+        st.session_state["ds_active_page"] = "Prophet Chart"
 
     st.sidebar.markdown('<div class="ds-nav-wrap">', unsafe_allow_html=True)
     for group_label, items in _ds_nav_groups:
@@ -10346,7 +10545,34 @@ def main() -> None:
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
     _ds_selected_page = st.session_state["ds_active_page"]
 
-    if _ds_selected_page == "Live":
+    _ds_missing_secrets = bool((provider_status or {}).get("missing_secrets"))
+    _ds_provider_error = bool((provider_status or {}).get("last_error"))
+    _ds_uw_token = (get_unusual_whales_token() or "").strip() if "get_unusual_whales_token" in globals() else ""
+    _ds_openai_key = get_secret_or_env("OPENAI_API_KEY") or get_secret_or_env("OPENAI_KEY")
+
+    _ds_provider_map = {
+        "Prophet Chart":  ("Tastytrade", _ds_missing_secrets, _ds_provider_error),
+        "Signal Log":     ("Tastytrade", _ds_missing_secrets, _ds_provider_error),
+        "Replay Lab":     ("Tastytrade", _ds_missing_secrets, _ds_provider_error),
+        "Options Cockpit":("Tastytrade", _ds_missing_secrets, _ds_provider_error),
+        "Analytics":      ("Tastytrade", _ds_missing_secrets, _ds_provider_error),
+        "Daily Brief":    ("OpenAI",     not bool(_ds_openai_key), False),
+        "SPY Foresight":  ("OpenAI",     not bool(_ds_openai_key), False),
+        "Order Flow":     ("Unusual Whales", not bool(_ds_uw_token), False),
+    }
+    _ds_provider_name, _ds_pill_missing, _ds_pill_err = _ds_provider_map.get(
+        _ds_selected_page, ("Tastytrade", _ds_missing_secrets, _ds_provider_error)
+    )
+    if _ds_pill_missing:
+        _ds_pill_label, _ds_pill_state = f"{_ds_provider_name} • Offline", "offline"
+    elif _ds_pill_err:
+        _ds_pill_label, _ds_pill_state = f"{_ds_provider_name} • Degraded", "warn"
+    else:
+        _ds_pill_label, _ds_pill_state = f"{_ds_provider_name} • Live", "live"
+    _ds_clock_text = real_now_ct.strftime("%I:%M:%S %p CT").lstrip("0")
+    _design_system_render_header(_ds_selected_page, _ds_pill_label, _ds_pill_state, clock_text=_ds_clock_text)
+
+    if _ds_selected_page == "Prophet Chart":
         if not session_has_candles:
             render_data_notice(f"Next-session plan for {selected_session_day}. Structure is projected from the latest completed market data; live entries and option contracts remain unavailable until that session prints candles.", tone="warn")
         elif not is_live_session:
@@ -10374,7 +10600,7 @@ def main() -> None:
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
 
-    if _ds_selected_page == "Market":
+    if _ds_selected_page == "Order Flow":
         render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
     if _ds_selected_page == "SPY Foresight":
@@ -10385,7 +10611,7 @@ def main() -> None:
     if _ds_selected_page == "Daily Brief":
         render_daily_brief_tab(morning_bundle)
 
-    if _ds_selected_page == "Chart":
+    if _ds_selected_page == "Signal Log":
         render_section_title("Prophet Chart", "Trigger map and candles")
         chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
@@ -10407,7 +10633,7 @@ def main() -> None:
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
 
-    if _ds_selected_page == "Replay":
+    if _ds_selected_page == "Replay Lab":
         render_section_title("Replay Lab", "Review entries without look-ahead")
         dates = get_available_replay_dates(df)
         if not dates:
@@ -10444,7 +10670,7 @@ def main() -> None:
             if table:
                 st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
 
-    if _ds_selected_page == "Options":
+    if _ds_selected_page == "Options Cockpit":
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
         if not session_has_candles:
             render_data_notice("Preview mode: option setup activates after the selected session prints candles.", tone="warn")
@@ -10502,65 +10728,40 @@ def main() -> None:
         else:
             render_data_notice("No options setup is active. Contract selection appears only after a confirmed or pending structure rejection.")
 
-    if _ds_selected_page == "Journal":
-        render_section_title("Journal Analytics", "Signal outcome history")
+    if _ds_selected_page == "Analytics":
         journal_path='data/signal_journal.json'
         entries = load_signal_journal(journal_path)
-        auto_status = AutoJournalStatus(False,0,0,0,None,[],"Auto-journal disabled.")
         opt_state = option_state if strikes else None
         current_flow_tags = premium_flow_tags(morning_bundle.options_intelligence)
-        entries, auto_status = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on and is_live_session, flow_tags=current_flow_tags)
-        render_status_strip([
-            ("Auto journal", "On" if auto_status.enabled else "Off"),
-            ("Saved", auto_status.saved_count),
-            ("Updated", auto_status.updated_count),
-            ("Skipped", auto_status.skipped_duplicate_count),
-        ])
-        notes = st.text_area("Trade notes", "")
-        tags_text = st.text_input("Tags (comma-separated)", "")
-        cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
-        save_live_disabled = not (active_signal and is_live_session)
-        if cja.button("Save live signal", disabled=save_live_disabled):
-            user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
-            e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
-            entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
-        if save_live_disabled:
-            st.caption("Live save activates only after the current session has an active signal.")
-        elif not is_live_session:
-            st.caption("Historical session: use Save replay signals.")
-        replay_state_for_journal = locals().get('rs')
-        if cjb.button("Save replay signals", disabled=(replay_state_for_journal is None)):
-            entries, replay_save_status = save_replay_signals_to_journal(replay_state_for_journal, entries, journal_path)
-            if replay_save_status["total"] == 0:
-                render_data_notice("No replay signals are available for the selected replay date.", tone="warn")
-            else:
-                render_data_notice(
-                    f"Replay saved: {replay_save_status['inserted']} added, "
-                    f"{replay_save_status['updated']} updated, {replay_save_status['skipped']} unchanged."
-                )
-        if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
-        cjd.download_button("Export journal JSON", data=signal_journal_to_json(entries), file_name="signal_journal.json")
-        cje.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
-        a=compute_journal_analytics(entries)
-        render_status_strip([
-            ("Entries", a.total_entries),
-            ("Confirmed", a.total_confirmed),
-            ("Win rate", fmt_pct(a.win_rate * 100, 0) if not pd.isna(a.win_rate) else "-"),
-            ("Avg RR", fmt_float(a.average_rr)),
-            ("Expectancy", fmt_price(a.expectancy_per_contract)),
-        ])
-        journal_view = pd.DataFrame([journal_entry_to_dict(x) for x in entries]).tail(50)
-        if not journal_view.empty:
-            if "line_name" in journal_view.columns:
-                journal_view["trigger"] = journal_view["line_name"].map(display_line_name)
-                journal_view = journal_view.drop(columns=["line_name"])
-            if "target_line_name" in journal_view.columns:
-                journal_view["target"] = journal_view["target_line_name"].map(display_line_name)
-                journal_view = journal_view.drop(columns=["target_line_name"])
-        if journal_view.empty:
-            render_data_notice("No journal history yet.")
-        else:
-            st.dataframe(journal_view, use_container_width=True)
+        entries, _ = auto_journal_live_signals(signals, decision_state, bias, opt_state, entries, journal_path, enabled=auto_journal_on and is_live_session, flow_tags=current_flow_tags)
+        a = compute_journal_analytics(entries)
+        _ds_render_analytics(entries, a)
+        with st.expander("Journal actions", expanded=False):
+            notes = st.text_area("Trade notes", "")
+            tags_text = st.text_input("Tags (comma-separated)", "")
+            cja,cjb,cjc,cjd,cje=st.columns([1.35,1.35,.85,1.1,1.1])
+            save_live_disabled = not (active_signal and is_live_session)
+            if cja.button("Save live signal", disabled=save_live_disabled):
+                user_tags=[t.strip() for t in tags_text.split(',') if t.strip()]
+                e=build_journal_entry_from_live_state(active_signal, decision_state, bias, opt_state, source='LIVE_MANUAL', notes=notes, tags=sorted(set(user_tags + current_flow_tags)))
+                entries, _ = upsert_journal_entry(entries, e); save_signal_journal(entries,journal_path)
+            if save_live_disabled:
+                st.caption("Live save activates only after the current session has an active signal.")
+            elif not is_live_session:
+                st.caption("Historical session: use Save replay signals.")
+            replay_state_for_journal = locals().get('rs')
+            if cjb.button("Save replay signals", disabled=(replay_state_for_journal is None)):
+                entries, replay_save_status = save_replay_signals_to_journal(replay_state_for_journal, entries, journal_path)
+                if replay_save_status["total"] == 0:
+                    render_data_notice("No replay signals are available for the selected replay date.", tone="warn")
+                else:
+                    render_data_notice(
+                        f"Replay saved: {replay_save_status['inserted']} added, "
+                        f"{replay_save_status['updated']} updated, {replay_save_status['skipped']} unchanged."
+                    )
+            if cjc.button("Reload journal"): entries=load_signal_journal(journal_path)
+            cjd.download_button("Export journal JSON", data=signal_journal_to_json(entries), file_name="signal_journal.json")
+            cje.download_button("Export journal CSV", data=pd.DataFrame([journal_entry_to_dict(x) for x in entries]).to_csv(index=False), file_name="signal_journal.csv")
         if show_debug:
             st.write("By line", a.by_line); st.write("By signal type", a.by_signal_type); st.write("By quality grade", a.by_quality_grade); st.write("By bias", a.by_bias); st.write("By hour", a.by_hour); st.write("By source", a.by_source)
         if a.total_entries > 0:
