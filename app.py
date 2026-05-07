@@ -10580,15 +10580,13 @@ def main() -> None:
 
         _ds_chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
         try:
-            _ds_hp = pivots["high"] if 'pivots' in locals() else None
-            _ds_lp = pivots["low"] if 'pivots' in locals() else None
-            _ds_fig = build_prophet_chart(
-                _ds_chart_df, primary_lines, secondary_lines, _ds_hp, _ds_lp, secondary_pivots, signals, decision_state,
+            render_structure_map_svg(
+                _ds_chart_df, primary_lines, secondary_lines, signals, decision_state,
                 latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct),
-                show_secondary=True, show_signals=True, show_trade_overlays=True, show_pivots=True,
+                title="SPY Structure Map",
+                subtitle=f"Active chart window 3:00 AM-6:00 PM CT; structure from {prior_day}",
                 secondary_mode="nearest 6",
             )
-            st.plotly_chart(_ds_fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as _ds_chart_err:
             render_warning_panel(f"Chart build failed: {_ds_chart_err}")
 
