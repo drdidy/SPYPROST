@@ -478,6 +478,60 @@ footer {{ visibility: hidden; }}
 
 /* === TRADYTICS-STYLE SHELL OVERRIDES (last) === */
 
+/* Brand block at top of sidebar */
+.ds-brand{{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 18px;
+  margin: 0 0 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}}
+.ds-brand-text{{display: flex; flex-direction: column; line-height: 1.2}}
+.ds-brand-name{{
+  color: #F4F7FB;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}}
+.ds-brand-tag{{
+  color: #5A6479;
+  font-size: 10px;
+  font-weight: 500;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}}
+
+/* Settings expander — tame the visual weight */
+[data-testid="stSidebar"] [data-testid="stExpander"]{{
+  background: transparent !important;
+  border: none !important;
+  margin: 12px 8px !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary,
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary{{
+  background: transparent !important;
+  color: #5A6479 !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.12em !important;
+  padding: 6px 10px !important;
+  border: none !important;
+  border-radius: 6px !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover,
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary:hover{{
+  background: rgba(255,255,255,0.03) !important;
+  color: #A0AEC8 !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p{{
+  color: #6B7B96 !important;
+  font-size: 11px !important;
+}}
+
+
+
 /* Background: even darker, more cinematic */
 html, body, .stApp, [data-testid="stAppViewContainer"]{{
   background: #0A0E14 !important;
@@ -511,7 +565,7 @@ html, body, .stApp, [data-testid="stAppViewContainer"]{{
 }}
 .ds-nav-wrap{{margin-bottom: 12px}}
 
-/* Sidebar buttons styled as nav items */
+/* Sidebar buttons styled as nav items — slim, flush, link-like */
 [data-testid="stSidebar"] .stButton > button{{
   background: transparent !important;
   border: none !important;
@@ -519,15 +573,23 @@ html, body, .stApp, [data-testid="stAppViewContainer"]{{
   color: #A0AEC8 !important;
   text-align: left !important;
   justify-content: flex-start !important;
-  padding: 8px 16px !important;
+  padding: 7px 14px !important;
   font-size: 13px !important;
   font-weight: 500 !important;
-  margin: 1px 8px !important;
+  margin: 0 8px !important;
   width: calc(100% - 16px) !important;
   box-shadow: none !important;
   height: auto !important;
   min-height: 0 !important;
+  line-height: 1.3 !important;
+  letter-spacing: 0.01em !important;
 }}
+[data-testid="stSidebar"] .stButton > button p{{
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  margin: 0 !important;
+}}
+[data-testid="stSidebar"] .stButton{{margin: 0 !important}}
 [data-testid="stSidebar"] .stButton > button:hover{{
   background: rgba(255,255,255,0.04) !important;
   color: #E8ECF4 !important;

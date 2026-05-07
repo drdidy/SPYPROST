@@ -9707,11 +9707,23 @@ def main() -> None:
     _design_system_register_plotly()
     real_now_ct = datetime.now(tz=get_central_tz())
 
-    st.sidebar.header("SPY Prophet Controls")
-    st.sidebar.button("Refresh data")
+    st.sidebar.markdown(
+        """
+        <div class="ds-brand">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#F5B642" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 17 9 11 13 15 21 7"/>
+            <polyline points="14 7 21 7 21 14"/>
+          </svg>
+          <div class="ds-brand-text">
+            <div class="ds-brand-name">SPY PROPHET</div>
+            <div class="ds-brand-tag">Structure-led decision support</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     admin_mode = is_admin_diagnostics_enabled()
-    show_debug = st.sidebar.toggle("Advanced diagnostics", value=False) if admin_mode else False
-    auto_journal_on = st.sidebar.toggle("Auto-journal live signals", value=False)
     slope = get_structure_calibration()
     provider = "TASTYTRADE"
     df = fetch_spy_hourly(period="60d")
@@ -9719,29 +9731,35 @@ def main() -> None:
     preview_max_day = next_session_after(real_now_ct.date())
     date_min = available_session_days[0] if available_session_days else (real_now_ct - pd.Timedelta(days=60)).date()
     date_max = max([preview_max_day, real_now_ct.date()] + available_session_days) if available_session_days else preview_max_day
-    selected_session_day = st.sidebar.date_input(
-        "Session date",
-        value=default_session_date(df, real_now_ct),
-        min_value=date_min,
-        max_value=date_max,
-        help="Choose the trading session to preview. Future sessions use the most recent completed session as structure until new candles arrive.",
-    )
+
+    _ds_settings = st.sidebar.expander("Session settings", expanded=False)
+    with _ds_settings:
+        st.button("Refresh data", use_container_width=True)
+        show_debug = st.toggle("Advanced diagnostics", value=False) if admin_mode else False
+        auto_journal_on = st.toggle("Auto-journal live signals", value=False)
+        selected_session_day = st.date_input(
+            "Session date",
+            value=default_session_date(df, real_now_ct),
+            min_value=date_min,
+            max_value=date_max,
+            help="Choose the trading session to preview. Future sessions use the most recent completed session as structure until new candles arrive.",
+        )
     selected_session_day = pd.Timestamp(selected_session_day).date()
     now_ct = resolve_session_clock(df, selected_session_day, real_now_ct).to_pydatetime()
     structure_projection_time = get_structure_projection_time(now_ct)
     session_has_candles = selected_session_day in available_session_days
     is_live_session = selected_session_day == real_now_ct.date()
-    st.sidebar.caption("Options feed: Tastytrade")
-    st.sidebar.caption("Structure calibration: Protected")
-    st.sidebar.caption(f"Actual CT: {real_now_ct.strftime('%H:%M:%S %Z')}")
-    st.sidebar.caption(f"Session clock: {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")
-    st.sidebar.caption(f"Structure projection: {fmt_clock_time(structure_projection_time)}")
-    if should_preview_next_session(real_now_ct, df) and selected_session_day > real_now_ct.date():
-        st.sidebar.caption("Next-session plan: active after 5:00 PM CT.")
-    if not session_has_candles:
-        st.sidebar.caption("Preview mode: session candles pending.")
-    elif not is_live_session:
-        st.sidebar.caption("Historical session preview.")
+    with _ds_settings:
+        st.caption(f"Actual CT — {real_now_ct.strftime('%H:%M:%S %Z')}")
+        st.caption(f"Session clock — {pd.Timestamp(now_ct).strftime('%Y-%m-%d %H:%M %Z')}")
+        st.caption(f"Projection — {fmt_clock_time(structure_projection_time)}")
+        st.caption("Options feed — Tastytrade · Structure — Protected")
+        if should_preview_next_session(real_now_ct, df) and selected_session_day > real_now_ct.date():
+            st.caption("Next-session plan: active after 5 PM CT.")
+        if not session_has_candles:
+            st.caption("Preview mode: session candles pending.")
+        elif not is_live_session:
+            st.caption("Historical session preview.")
 
     latest_price = None
     prior_day = None
@@ -9836,25 +9854,25 @@ def main() -> None:
     _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state, clock_text=_ds_clock_text)
 
     _ds_nav_groups = [
-        ("ANALYSIS",     [("Live", "L"), ("Chart", "C"), ("Replay", "R")]),
-        ("EXECUTION",    [("Options", "O")]),
-        ("INTELLIGENCE", [("SPY Foresight", "F"), ("Daily Brief", "D"), ("Market", "M")]),
-        ("JOURNAL",      [("Journal", "J")]),
+        ("ANALYSIS",     ["Live", "Chart", "Replay"]),
+        ("EXECUTION",    ["Options"]),
+        ("INTELLIGENCE", ["SPY Foresight", "Daily Brief", "Market"]),
+        ("JOURNAL",      ["Journal"]),
     ]
     if show_debug:
-        _ds_nav_groups.append(("DIAGNOSTICS", [("Structure Details", "S"), ("Signal Details", "G"), ("Diagnostics", "X")]))
+        _ds_nav_groups.append(("DIAGNOSTICS", ["Structure Details", "Signal Details", "Diagnostics"]))
 
-    _ds_all_pages = [name for _, items in _ds_nav_groups for name, _ in items]
+    _ds_all_pages = [name for _, items in _ds_nav_groups for name in items]
     if "ds_active_page" not in st.session_state or st.session_state["ds_active_page"] not in _ds_all_pages:
         st.session_state["ds_active_page"] = "Live"
 
     st.sidebar.markdown('<div class="ds-nav-wrap">', unsafe_allow_html=True)
     for group_label, items in _ds_nav_groups:
         st.sidebar.markdown(f'<div class="ds-nav-group">{group_label}</div>', unsafe_allow_html=True)
-        for page_name, glyph in items:
+        for page_name in items:
             is_active = (st.session_state["ds_active_page"] == page_name)
             if st.sidebar.button(
-                f"{glyph}   {page_name}",
+                page_name,
                 key=f"ds_nav_{page_name}",
                 use_container_width=True,
                 type=("primary" if is_active else "secondary"),
