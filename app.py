@@ -22,6 +22,12 @@ import plotly.graph_objects as go
 from tastytrade_provider import TastytradeProvider, TastytradeProviderStatus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from theme import (
+    inject_css as _design_system_inject_css,
+    register_plotly_default as _design_system_register_plotly,
+    render_app_header as _design_system_render_header,
+)
+
 SYMBOL = "SPY"
 VIX_SYMBOL = "^VIX"
 CENTRAL_TZ_NAME = "America/Chicago"
@@ -9371,6 +9377,8 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
 def main() -> None:
     st.set_page_config(page_title="SPY Prophet", page_icon="SPY", layout="wide", initial_sidebar_state="expanded")
     inject_global_css()
+    _design_system_inject_css()
+    _design_system_register_plotly()
     real_now_ct = datetime.now(tz=get_central_tz())
 
     st.sidebar.header("SPY Prophet Controls")
@@ -9489,6 +9497,16 @@ def main() -> None:
         st.sidebar.caption(f"Latest candle: {df.index[-1] if not df.empty else 'N/A'}")
         st.sidebar.caption(f"Structure day: {prior_day}")
         st.sidebar.caption(f"Signal day: {signal_day}")
+
+    _ds_missing_secrets = bool((provider_status or {}).get("missing_secrets"))
+    _ds_provider_error = bool((provider_status or {}).get("last_error"))
+    if _ds_missing_secrets:
+        _ds_pill_label, _ds_pill_state = "Tastytrade • Offline", "offline"
+    elif _ds_provider_error:
+        _ds_pill_label, _ds_pill_state = "Tastytrade • Degraded", "warn"
+    else:
+        _ds_pill_label, _ds_pill_state = "Tastytrade • Live", "live"
+    _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state)
 
     tab_names = ["Live", "SPY Foresight", "Daily Brief", "Market", "Chart", "Replay", "Options", "Journal"]
     if show_debug:
