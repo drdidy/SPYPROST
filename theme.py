@@ -105,6 +105,21 @@ def apply_chart_theme(fig) -> Any:
     return fig
 
 
+def register_plotly_default() -> None:
+    """Register the Prophet template as Plotly's default so every figure
+    in the app inherits its colors, fonts, gridlines, and hover styling
+    without per-call changes. Idempotent.
+    """
+    try:
+        import plotly.io as pio
+        import plotly.graph_objects as go
+    except Exception:
+        return
+    template = go.layout.Template(layout=PROPHET_THEME["layout"])
+    pio.templates["spy_prophet"] = template
+    pio.templates.default = "spy_prophet"
+
+
 # ---------------------------------------------------------------------------
 # CSS injection
 # ---------------------------------------------------------------------------
@@ -547,6 +562,40 @@ def status_pill(label: str, state: str = "neutral") -> str:
         f'<span class="pill-dot"></span>{escape(label)}'
         f'</span>'
     )
+
+
+def render_app_header(title: str, pill_label: str, pill_state: str = "neutral") -> None:
+    """Render the top header bar: page title, status pill, ticking CT clock.
+
+    The clock is a self-contained client-side updater — it ticks every
+    second using the browser's `Intl.DateTimeFormat` set to America/Chicago,
+    so it stays accurate without a Streamlit rerun.
+    """
+    pill_html = status_pill(pill_label, pill_state)
+    html = f"""
+<div class="app-header">
+  <div class="app-title">{escape(title)}</div>
+  <div class="app-meta">
+    {pill_html}
+    <span class="app-clock" id="spy-prophet-ct-clock">--:--:-- CT</span>
+  </div>
+</div>
+<script>
+(function() {{
+  const el = document.getElementById('spy-prophet-ct-clock');
+  if (!el || el.dataset.bound === '1') return;
+  el.dataset.bound = '1';
+  const fmt = new Intl.DateTimeFormat('en-US', {{
+    timeZone: 'America/Chicago',
+    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+  }});
+  function tick() {{ el.textContent = fmt.format(new Date()) + ' CT'; }}
+  tick();
+  setInterval(tick, 1000);
+}})();
+</script>
+"""
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def empty_state(icon: str, title: str, body: str) -> None:
