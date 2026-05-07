@@ -10500,7 +10500,7 @@ def main() -> None:
     _ds_nav_groups = [
         ("ANALYSIS",     ["Prophet Chart", "Replay Lab"]),
         ("EXECUTION",    ["Options Cockpit"]),
-        ("INTELLIGENCE", ["Daily Brief", "SPY Foresight", "Order Flow"]),
+        ("INTELLIGENCE", ["Daily Brief", "SPY Foresight", "Order Flow", "Market Context"]),
         ("JOURNAL",      ["Signal Log", "Analytics"]),
     ]
     if show_debug:
@@ -10540,6 +10540,7 @@ def main() -> None:
         "Daily Brief":    ("OpenAI",     not bool(_ds_openai_key), False),
         "SPY Foresight":  ("OpenAI",     not bool(_ds_openai_key), False),
         "Order Flow":     ("Unusual Whales", not bool(_ds_uw_token), False),
+        "Market Context": ("Yahoo Finance", False, False),
     }
     _ds_provider_name, _ds_pill_missing, _ds_pill_err = _ds_provider_map.get(
         _ds_selected_page, ("Tastytrade", _ds_missing_secrets, _ds_provider_error)
@@ -10592,6 +10593,9 @@ def main() -> None:
                     ("Target premium", fmt_price(option_state.entry_target_projection.estimated_target_mark)),
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
+
+    if _ds_selected_page == "Market Context":
+        render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
     if _ds_selected_page == "Order Flow":
         if not _ds_uw_token:
