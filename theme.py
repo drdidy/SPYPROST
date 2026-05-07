@@ -152,8 +152,8 @@ html, body, [data-testid="stAppViewContainer"], .stApp {{
   background-color: var(--bg-page) !important;
   color: var(--text-primary);
   font-family: {FONT_UI};
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.55;
 }}
 
 [data-testid="stMarkdownContainer"] h1,
@@ -537,11 +537,35 @@ html, body, .stApp, [data-testid="stAppViewContainer"]{{
   background: #0A0E14 !important;
 }}
 .main .block-container, .block-container{{
-  padding-top: 1.25rem !important;
-  padding-left: 32px !important;
-  padding-right: 32px !important;
-  max-width: 1440px !important;
+  padding-top: 1.75rem !important;
+  padding-left: 40px !important;
+  padding-right: 40px !important;
+  max-width: 1520px !important;
 }}
+
+/* Larger labels app-wide */
+[data-testid="stMetricLabel"], .ds-anal-l, .ds-l, .panel-hd, .tt-lbl, .pill-k, .stape-head, .tmap-head, .ds-nav-group{{
+  font-size: 12px !important;
+}}
+[data-testid="stMetricValue"]{{ font-size: 28px !important; }}
+
+/* Native widgets */
+.stTextInput input, .stNumberInput input, .stDateInput input, [data-baseweb="select"] > div{{
+  font-size: 14px !important;
+  padding: 8px 12px !important;
+}}
+.stButton > button, .stDownloadButton > button{{
+  font-size: 14px !important;
+  padding: 9px 16px !important;
+}}
+
+/* KPI / card breathing */
+.ds-anal-kpi{{ padding: 26px 28px !important; }}
+.ds-anal-card{{ padding: 26px 28px !important; }}
+.ds-anal-v{{ font-size: 42px !important; }}
+
+/* Plotly text bump */
+.stPlotlyChart text{{ font-size: 12px !important; }}
 
 /* Sidebar — wider, darker, no border */
 [data-testid="stSidebar"], [data-testid="stSidebar"] > div{{
