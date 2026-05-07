@@ -9704,6 +9704,7 @@ def _ds_render_live_terminal(
     now_ct,
     structure_projection_time,
     df,
+    chart_callback=None,
 ):
     """Bloomberg Terminal Reborn — single-surface Live workstation."""
     import html as _html
@@ -10137,21 +10138,48 @@ def _ds_render_live_terminal(
     </style>
     """
 
-    body = (
-        css
-        + "<div class='ds-term'>"
-        + f"<div class='ds-tt mono'>{tt_html}</div>"
-        + "<div class='ds-grid'>"
-        +   f"<div class='col-8'>{slate_html}</div>"
-        +   f"<div class='col-4'>{tmap_html}</div>"
-        +   f"<div class='col-12'>{stape_html}</div>"
-        +   f"<div class='col-8'>{sread_html}</div>"
-        +   f"<div class='col-4'>{learn_html}</div>"
-        + "</div>"
-        + "</div>"
-    )
-
-    st.markdown(body, unsafe_allow_html=True)
+    if chart_callback is not None:
+        # Decision-first layout: tickertape → slate (full width) → [chart] → rest of panels.
+        head = (
+            css
+            + "<div class='ds-term'>"
+            + f"<div class='ds-tt mono'>{tt_html}</div>"
+            + "<div class='ds-grid'>"
+            + f"<div class='col-12'>{slate_html}</div>"
+            + "</div>"
+            + "</div>"
+        )
+        st.markdown(head, unsafe_allow_html=True)
+        try:
+            chart_callback()
+        except Exception as _ds_chart_err:
+            render_warning_panel(f"Chart build failed: {_ds_chart_err}")
+        tail = (
+            "<div class='ds-term' style='padding-top:0;margin-top:0'>"
+            + "<div class='ds-grid'>"
+            +   f"<div class='col-8'>{stape_html}</div>"
+            +   f"<div class='col-4'>{tmap_html}</div>"
+            +   f"<div class='col-8'>{sread_html}</div>"
+            +   f"<div class='col-4'>{learn_html}</div>"
+            + "</div>"
+            + "</div>"
+        )
+        st.markdown(tail, unsafe_allow_html=True)
+    else:
+        body = (
+            css
+            + "<div class='ds-term'>"
+            + f"<div class='ds-tt mono'>{tt_html}</div>"
+            + "<div class='ds-grid'>"
+            +   f"<div class='col-8'>{slate_html}</div>"
+            +   f"<div class='col-4'>{tmap_html}</div>"
+            +   f"<div class='col-12'>{stape_html}</div>"
+            +   f"<div class='col-8'>{sread_html}</div>"
+            +   f"<div class='col-4'>{learn_html}</div>"
+            + "</div>"
+            + "</div>"
+        )
+        st.markdown(body, unsafe_allow_html=True)
 
 
 def _ds_render_live_overview(
@@ -10560,7 +10588,7 @@ def main() -> None:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
 
         _ds_chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
-        try:
+        def _ds_chart_render():
             render_structure_map_svg(
                 _ds_chart_df, primary_lines, secondary_lines, signals, decision_state,
                 latest_price if latest_price is not None else float('nan'), pd.Timestamp(now_ct),
@@ -10568,8 +10596,6 @@ def main() -> None:
                 subtitle=f"Active chart window 3:00 AM-6:00 PM CT; structure from {prior_day}",
                 secondary_mode="nearest 6",
             )
-        except Exception as _ds_chart_err:
-            render_warning_panel(f"Chart build failed: {_ds_chart_err}")
 
         _ds_render_live_terminal(
             latest_price=latest_price,
@@ -10584,6 +10610,7 @@ def main() -> None:
             now_ct=now_ct,
             structure_projection_time=structure_projection_time,
             df=df,
+            chart_callback=_ds_chart_render,
         )
         if option_state:
             if option_state.entry_target_projection:
