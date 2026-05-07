@@ -475,6 +475,140 @@ html, body, [data-testid="stAppViewContainer"], .stApp {{
 /* Hide default Streamlit chrome we don't want */
 #MainMenu {{ visibility: hidden; }}
 footer {{ visibility: hidden; }}
+
+/* === TRADYTICS-STYLE SHELL OVERRIDES (last) === */
+
+/* Background: even darker, more cinematic */
+html, body, .stApp, [data-testid="stAppViewContainer"]{{
+  background: #0A0E14 !important;
+}}
+.main .block-container, .block-container{{
+  padding-top: 1.25rem !important;
+  padding-left: 32px !important;
+  padding-right: 32px !important;
+  max-width: 1440px !important;
+}}
+
+/* Sidebar — wider, darker, no border */
+[data-testid="stSidebar"], [data-testid="stSidebar"] > div{{
+  width: 240px !important;
+  min-width: 240px !important;
+  background: #0A0E14 !important;
+  border-right: 1px solid rgba(255,255,255,0.04) !important;
+  padding-top: 8px !important;
+}}
+[data-testid="stSidebar"] [data-testid="stSidebarNav"]{{display:none !important}}
+
+/* Sidebar nav group labels */
+.ds-nav-group{{
+  color: #5A6479;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 16px 16px 4px;
+  margin-top: 4px;
+}}
+.ds-nav-wrap{{margin-bottom: 12px}}
+
+/* Sidebar buttons styled as nav items */
+[data-testid="stSidebar"] .stButton > button{{
+  background: transparent !important;
+  border: none !important;
+  border-radius: 6px !important;
+  color: #A0AEC8 !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  padding: 8px 16px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  margin: 1px 8px !important;
+  width: calc(100% - 16px) !important;
+  box-shadow: none !important;
+  height: auto !important;
+  min-height: 0 !important;
+}}
+[data-testid="stSidebar"] .stButton > button:hover{{
+  background: rgba(255,255,255,0.04) !important;
+  color: #E8ECF4 !important;
+  border: none !important;
+}}
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"]{{
+  background: rgba(245,182,66,0.14) !important;
+  color: #F5B642 !important;
+  border: none !important;
+  font-weight: 600 !important;
+}}
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover{{
+  background: rgba(245,182,66,0.20) !important;
+  color: #F5B642 !important;
+}}
+
+/* Hide the now-empty Streamlit tab bar entirely */
+[data-baseweb="tab-list"]{{display: none !important}}
+[data-baseweb="tab-panel"]{{padding: 0 !important}}
+
+/* Cards: nuke borders, use slightly lighter bg + breathing room */
+[class*="-card"], [class*="-shell"], [class*="-plate"], [class*="-tile"]:not([class*="tile-label"]),
+[class*="-mini"]:not([class*="mini-label"]):not([class*="mini-value"]):not([class*="mini-copy"]),
+.terminal-hero, .brand-logo, .brief-card, .ai-verify-card, .citation-card,
+.calendar-event, .data-notice, .decision-plate, .scenario-card,
+.daily-guide-card, .source-card, .signal-card, .strike-card, .upgrade-card,
+.flow-board-card, .ds-kpi, .ds-panel, .ds-hero{{
+  background: #0F1623 !important;
+  border: 1px solid rgba(255,255,255,0.04) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}}
+
+/* Native metrics: also Tradytics-tuned */
+[data-testid="stMetric"]{{
+  background: #0F1623 !important;
+  border: 1px solid rgba(255,255,255,0.04) !important;
+  border-radius: 10px !important;
+  padding: 20px 22px !important;
+}}
+
+/* Big numbers should be heavy and white */
+.ds-hero-value, .hero-price, [data-testid="stMetricValue"]{{
+  color: #F4F7FB !important;
+  font-weight: 700 !important;
+}}
+
+/* Header bar — drop bottom border, subtler */
+.app-header{{
+  border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+  margin-bottom: 24px !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}}
+
+/* Refresh button in sidebar should match nav style */
+[data-testid="stSidebar"] [data-testid="stButton-secondary"]{{
+  background: rgba(255,255,255,0.03) !important;
+  margin: 4px 16px 12px !important;
+  width: calc(100% - 32px) !important;
+}}
+
+/* Tighten captions/labels */
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] [data-testid="stCaptionContainer"]{{
+  color: #5A6479 !important;
+  font-size: 11px !important;
+  padding: 2px 16px !important;
+}}
+
+/* Drop ALL border-radius >12px (Tradytics is squarish) */
+[class*="radius"]{{border-radius: 10px !important}}
+
+/* SPY price hero: bigger, more center stage */
+.ds-hero{{padding: 40px 32px !important}}
+.ds-hero-value{{font-size: 56px !important}}
+
+/* KPI cards: bigger, more breathing */
+.ds-kpi{{padding: 24px 22px !important; min-height: 110px}}
+.ds-kpi .ds-v{{font-size: 26px !important}}
+
 </style>
 """
 
