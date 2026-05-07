@@ -9500,6 +9500,335 @@ def auto_journal_live_signals(signals, decision_state, bias_state, options_cockp
     return entries, AutoJournalStatus(True,saved,updated,skipped,latest,[],"Auto-journal processed live signals.")
 
 
+def _ds_render_live_briefing(
+    latest_price,
+    bias,
+    decision_state,
+    active_signal,
+    closest,
+    primary_lines,
+    signals,
+    learning_profile,
+    market_context,
+    now_ct,
+    structure_projection_time,
+):
+    """Editorial Briefing — magazine-style Live page. Visuals only.
+
+    Reads existing computed state and renders it as a Stripe-Press-quality
+    article: 52px headline, drop-cap lede, amber pull-quote, NYT-recipe
+    numbered steps. No cards. The article floats directly on the page.
+    """
+    from html import escape as _esc
+
+    def _num(v, dp=2):
+        try:
+            if v is None: return "—"
+            f = float(v)
+            if f != f: return "—"
+            return f"{f:,.{dp}f}"
+        except Exception:
+            return "—"
+
+    def _safe(s, default="—"):
+        if s is None: return default
+        s = str(s).strip()
+        return s if s else default
+
+    def _date_str(dt):
+        try:
+            d = dt.strftime("%A, %B ") + str(int(dt.strftime("%d")))
+            t = dt.strftime("%I:%M %p").lstrip("0")
+            y = dt.strftime("%Y")
+            return f"{d}, {y} · {t} CT"
+        except Exception:
+            return "Live session"
+
+    def _bias_tone(b):
+        if not b: return ("NEUTRAL", "neutral")
+        bb = (b.bias or "").upper()
+        if "BULL" in bb: return (bb, "bull")
+        if "BEAR" in bb: return (bb, "bear")
+        return (bb or "NEUTRAL", "neutral")
+
+    def _grade_tone(g):
+        if not g: return ("—", "neutral")
+        g = str(g).upper()
+        if g in ("A", "A+", "A-"): return (g, "bull")
+        if g in ("B", "B+", "B-"): return (g, "neutral")
+        return (g, "bear")
+
+    def _sig_tone(t):
+        t = (t or "").upper()
+        if t == "CALL": return "bull"
+        if t == "PUT":  return "bear"
+        return "neutral"
+
+    bias_label, bias_class = _bias_tone(bias)
+    bias_strength = getattr(bias, "strength_score", None) if bias else None
+    bias_expl = _safe(getattr(bias, "explanation", "") if bias else "", "")
+
+    decision_expl = _safe(getattr(decision_state, "final_explanation", "") if decision_state else "", "")
+    sq = getattr(decision_state, "signal_quality", None) if decision_state else None
+    grade_label, grade_class = _grade_tone(getattr(sq, "grade", None) if sq else None)
+    grade_score = getattr(sq, "score", None) if sq else None
+
+    closest_name_raw = getattr(closest, "name", None) if closest else None
+    closest_display = display_line_name(closest_name_raw) if closest_name_raw else "—"
+    closest_value = None
+    if closest is not None:
+        try:
+            closest_value = closest.value_at(structure_projection_time) if structure_projection_time is not None else getattr(closest, "current_value", None)
+        except Exception:
+            closest_value = getattr(closest, "current_value", None)
+    distance = None
+    if closest_value is not None and latest_price is not None:
+        try: distance = abs(float(latest_price) - float(closest_value))
+        except Exception: distance = None
+
+    ud_value = getattr(bias, "ud_value", None) if bias else None
+    ua_value = getattr(bias, "ua_value", None) if bias else None
+
+    vix = getattr(market_context, "vix_price", None) if market_context else None
+    vix_label = getattr(market_context, "vix_label", "") if market_context else ""
+
+    if bias_class == "bull":
+        if ud_value is not None and not pd.isna(ud_value):
+            headline = f"Bullish bias holds — wait for confirmation above {_num(ud_value)}."
+        else:
+            headline = f"Bullish bias holds — entries on rejection at {closest_display}."
+    elif bias_class == "bear":
+        if ua_value is not None and not pd.isna(ua_value):
+            headline = f"Bears in control — fade rallies into {_num(ua_value)}."
+        else:
+            headline = f"Bears in control — entries on rejection at {closest_display}."
+    else:
+        headline = f"No edge yet — watch {closest_display} at {_num(closest_value)} for the first reaction."
+
+    standfirst = decision_expl or bias_expl or "Structure is set. Wait for price to interact with the nearest line before committing capital."
+    if decision_expl and bias_expl and decision_expl != bias_expl:
+        standfirst = f"{decision_expl} {bias_expl}"
+    if len(standfirst) > 320:
+        standfirst = standfirst[:317].rsplit(" ", 1)[0] + "…"
+
+    lede_parts = []
+    if latest_price is not None:
+        lede_parts.append(f"SPY trades at {_num(latest_price)} as the session opens.")
+    if closest_value is not None:
+        if distance is not None:
+            lede_parts.append(f"The nearest structural line, {closest_display}, sits {_num(distance)} points away at {_num(closest_value)}.")
+        else:
+            lede_parts.append(f"The nearest structural line, {closest_display}, prints at {_num(closest_value)}.")
+    if bias_strength is not None:
+        try:
+            lede_parts.append(f"Bias strength reads {_num(bias_strength, 2)} on a scale anchored to historical structure interactions.")
+        except Exception:
+            pass
+    if grade_label != "—":
+        s = f"The current setup grades {grade_label}"
+        if grade_score is not None:
+            try: s += f" at a quality score of {_num(grade_score, 2)}"
+            except Exception: pass
+        s += "."
+        lede_parts.append(s)
+    lede = " ".join(lede_parts) if lede_parts else "The session is live. Structure is loaded. The first interaction with a primary line will set the tone."
+
+    if closest_value is not None and distance is not None:
+        pull = f"Watching {closest_display} at {_num(closest_value)} — {_num(distance)} points away."
+    elif closest_value is not None:
+        pull = f"Watching {closest_display} at {_num(closest_value)}."
+    else:
+        pull = "Waiting for price to find structure."
+
+    setup = []
+    if active_signal and active_signal.line_name:
+        ln = display_line_name(active_signal.line_name)
+        setup.append(("Wait", f"Hold for confirmation at {ln}.",
+                      f"Active {active_signal.signal_type} setup keyed to the rejection — no entry until the candle closes through structure."))
+    else:
+        trigger_line = closest_display
+        trigger_val = _num(closest_value)
+        setup.append(("Wait", f"Watch {trigger_line} at {trigger_val}.",
+                      f"No active signal. The first clean rejection at {trigger_line} sets the bias of the day."))
+
+    if active_signal and active_signal.entry_price is not None and not pd.isna(active_signal.entry_price):
+        setup.append(("Enter", f"Trigger at {_num(active_signal.entry_price)}.",
+                      f"{active_signal.signal_type} on confirmed rejection. Status: {_safe(active_signal.status, 'pending')}."))
+    else:
+        if bias_class == "bear":
+            setup.append(("Enter", "Fade strength on rejection.",
+                          "Take the entry only after the candle closes back below the line — no anticipating."))
+        else:
+            setup.append(("Enter", "Buy weakness on rejection.",
+                          "Take the entry only after the candle closes back above the line — no anticipating."))
+
+    if active_signal and active_signal.target_price is not None and not pd.isna(active_signal.target_price):
+        tgt_name = display_line_name(active_signal.target_line_name) if getattr(active_signal, "target_line_name", None) else "next structure"
+        rr = _num(getattr(active_signal, "rr_ratio", None), 2)
+        setup.append(("Target", f"First objective {_num(active_signal.target_price)}.",
+                      f"Scale at {tgt_name}. R:R {rr}."))
+    else:
+        setup.append(("Target", "Next primary line.",
+                      "Scale half at the first opposing structural line. Trail the rest under the prior swing."))
+
+    if active_signal and active_signal.stop_price is not None and not pd.isna(active_signal.stop_price):
+        setup.append(("Risk", f"Stop {_num(active_signal.stop_price)}.",
+                      f"Risk per contract: {_num(getattr(active_signal, 'risk', None), 2)} pts. Honor the stop."))
+    else:
+        setup.append(("Risk", "Stop beyond the rejecting wick.",
+                      "If price closes back through the line, the thesis is invalid. Exit, do not average."))
+
+    recent = list(signals or [])[-5:][::-1]
+
+    confidence_label = _safe(getattr(learning_profile, "confidence_label", "") if learning_profile else "", "Building")
+    tp1_pct = None
+    if learning_profile is not None:
+        try: tp1_pct = float(getattr(learning_profile, "target_first_rate", 0.0)) * 100
+        except Exception: tp1_pct = None
+
+    css = """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Source+Serif+Pro:ital,wght@1,500;1,600;1,700&display=swap');
+    .brf-stage{background:#0A0E14;padding:56px 24px 96px 24px;margin:-1rem -1rem 0 -1rem;}
+    .brf-article{max-width:720px;margin:0 auto;
+        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        color:#D4DAE6;-webkit-font-smoothing:antialiased;}
+    .brf-kicker{font-size:12px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;
+        color:#A0AEC8;margin:0 0 28px 0;display:flex;align-items:center;gap:10px;}
+    .brf-kicker::before{content:"";width:6px;height:6px;border-radius:50%;background:#F5B642;display:inline-block;}
+    .brf-headline{font-size:52px;line-height:1.05;font-weight:800;letter-spacing:-0.02em;
+        color:#F4F7FB;margin:0 0 24px 0;}
+    .brf-standfirst{font-size:18px;line-height:1.5;font-weight:500;color:#A0AEC8;
+        margin:0 0 36px 0;max-width:640px;}
+    .brf-rule{height:1px;background:rgba(255,255,255,0.08);margin:28px 0;}
+    .brf-byline{font-family:'JetBrains Mono','Roboto Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+        font-size:12px;color:#6B7B96;letter-spacing:0.04em;
+        display:flex;flex-wrap:wrap;gap:18px;margin:0 0 40px 0;}
+    .brf-byline .num{color:#E8ECF4;font-weight:600;}
+    .brf-byline .sep{color:#3a4456;}
+    .brf-byline .chip{display:inline-block;padding:1px 8px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:0.08em;}
+    .brf-byline .chip.bull{background:rgba(74,222,128,0.12);color:#4ADE80;}
+    .brf-byline .chip.bear{background:rgba(248,113,113,0.12);color:#F87171;}
+    .brf-byline .chip.neutral{background:rgba(160,174,200,0.10);color:#A0AEC8;}
+    .brf-lede{font-size:16px;line-height:1.7;color:#D4DAE6;margin:0 0 36px 0;font-weight:400;}
+    .brf-lede::first-letter{font-family:'Source Serif Pro','Source Serif 4','Iowan Old Style',Georgia,serif;
+        font-size:64px;line-height:0.85;font-weight:700;color:#F5B642;float:left;
+        padding:6px 12px 0 0;margin-top:4px;}
+    .brf-pullquote{margin:48px 0;padding:8px 0 8px 32px;border-left:3px solid #F5B642;
+        font-family:'Source Serif Pro','Source Serif 4','Iowan Old Style',Georgia,serif;
+        font-size:24px;line-height:1.4;font-style:italic;font-weight:500;color:#F5B642;
+        letter-spacing:-0.005em;}
+    .brf-section{font-size:13px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;
+        color:#A0AEC8;margin:48px 0 24px 0;}
+    .brf-step{display:grid;grid-template-columns:80px 1fr;gap:8px;padding:20px 0;
+        border-top:1px solid rgba(255,255,255,0.06);}
+    .brf-step:last-child{border-bottom:1px solid rgba(255,255,255,0.06);}
+    .brf-step-num{font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace;
+        font-size:34px;font-weight:600;color:#5A6479;line-height:1;letter-spacing:-0.02em;}
+    .brf-step-title{font-size:17px;font-weight:600;color:#F4F7FB;margin:0 0 6px 0;
+        letter-spacing:-0.005em;}
+    .brf-step-body{font-size:14px;line-height:1.55;color:#A0AEC8;margin:0;}
+    .brf-step-kicker{display:inline-block;font-size:10px;font-weight:700;letter-spacing:0.16em;
+        text-transform:uppercase;color:#6B7B96;margin-bottom:6px;}
+    .brf-sig{display:flex;align-items:center;justify-content:space-between;gap:16px;
+        padding:14px 0;border-top:1px solid rgba(255,255,255,0.06);font-size:13px;}
+    .brf-sig:last-child{border-bottom:1px solid rgba(255,255,255,0.06);}
+    .brf-sig-left{display:flex;align-items:center;gap:12px;min-width:0;}
+    .brf-sig-time{font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace;
+        font-size:12px;color:#6B7B96;letter-spacing:0.02em;white-space:nowrap;}
+    .brf-sig-chip{font-size:10px;font-weight:700;letter-spacing:0.10em;padding:2px 7px;
+        border-radius:3px;text-transform:uppercase;}
+    .brf-sig-chip.bull{background:rgba(74,222,128,0.12);color:#4ADE80;}
+    .brf-sig-chip.bear{background:rgba(248,113,113,0.12);color:#F87171;}
+    .brf-sig-chip.neutral{background:rgba(160,174,200,0.10);color:#A0AEC8;}
+    .brf-sig-body{color:#D4DAE6;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .brf-sig-status{color:#6B7B96;font-size:12px;text-align:right;white-space:nowrap;}
+    .brf-empty{color:#6B7B96;font-style:italic;font-size:14px;padding:14px 0;}
+    .brf-foot{margin-top:56px;padding-top:24px;border-top:1px solid rgba(255,255,255,0.08);
+        font-size:12px;font-style:italic;color:#6B7B96;line-height:1.6;}
+    @media (max-width:640px){
+        .brf-stage{padding:32px 16px 64px 16px;}
+        .brf-headline{font-size:34px;}
+        .brf-standfirst{font-size:16px;}
+        .brf-pullquote{font-size:20px;padding-left:20px;}
+        .brf-step{grid-template-columns:56px 1fr;}
+        .brf-step-num{font-size:26px;}
+    }
+    </style>
+    """
+
+    byline_bits = [
+        f'<span>SPY <span class="num">{_num(latest_price)}</span></span>',
+        '<span class="sep">/</span>',
+        f'<span>VIX <span class="num">{_num(vix, 2)}</span>{" " + _esc(vix_label) if vix_label else ""}</span>',
+        '<span class="sep">/</span>',
+        f'<span>Bias <span class="chip {bias_class}">{_esc(bias_label)}</span></span>',
+        '<span class="sep">/</span>',
+        f'<span>Grade <span class="chip {grade_class}">{_esc(grade_label)}</span></span>',
+    ]
+    byline_html = "".join(byline_bits)
+
+    steps_html = ""
+    for i, (kicker, title, body) in enumerate(setup, 1):
+        steps_html += (
+            f'<div class="brf-step">'
+            f'<div class="brf-step-num">{i:02d}</div>'
+            f'<div>'
+            f'<div class="brf-step-kicker">{_esc(kicker)}</div>'
+            f'<div class="brf-step-title">{_esc(title)}</div>'
+            f'<p class="brf-step-body">{_esc(body)}</p>'
+            f'</div></div>'
+        )
+
+    if recent:
+        sig_html = ""
+        for s in recent:
+            tone = _sig_tone(s.signal_type)
+            try:
+                t = s.rejection_time.strftime("%I:%M%p").lstrip("0").lower() if s.rejection_time is not None else "—"
+            except Exception:
+                t = "—"
+            ln = display_line_name(s.line_name) if s.line_name else "—"
+            sig_html += (
+                f'<div class="brf-sig">'
+                f'<div class="brf-sig-left">'
+                f'<span class="brf-sig-time">{_esc(t)}</span>'
+                f'<span class="brf-sig-chip {tone}">{_esc(s.signal_type or "—")}</span>'
+                f'<span class="brf-sig-body">{_esc(ln)}</span>'
+                f'</div>'
+                f'<div class="brf-sig-status">{_esc(_safe(s.status, "—"))}</div>'
+                f'</div>'
+            )
+    else:
+        sig_html = '<div class="brf-empty">No signals fired yet this session. The page rewrites itself the moment one does.</div>'
+
+    foot_bits = [f"Confidence is {_esc(confidence_label)}."]
+    if tp1_pct is not None:
+        foot_bits.append(f"TP1+ historically first {_num(tp1_pct, 0)}%.")
+    foot_html = " ".join(foot_bits)
+
+    html = f"""
+    {css}
+    <div class="brf-stage">
+      <article class="brf-article">
+        <div class="brf-kicker">Today's Briefing — {_esc(_date_str(now_ct))}</div>
+        <h1 class="brf-headline">{_esc(headline)}</h1>
+        <p class="brf-standfirst">{_esc(standfirst)}</p>
+        <div class="brf-rule"></div>
+        <div class="brf-byline">{byline_html}</div>
+        <p class="brf-lede">{_esc(lede)}</p>
+        <blockquote class="brf-pullquote">"{_esc(pull)}"</blockquote>
+        <div class="brf-section">The setup</div>
+        {steps_html}
+        <div class="brf-section">Recent signals</div>
+        {sig_html}
+        <div class="brf-foot">{foot_html}</div>
+      </article>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _ds_render_live_overview(
     latest_price,
     bias,
@@ -9888,26 +10217,18 @@ def main() -> None:
         elif not is_live_session:
             render_data_notice(f"Viewing historical session {selected_session_day}. Use Replay Lab for strict candle-by-candle review.")
 
-        _ds_render_live_overview(
+        _ds_render_live_briefing(
             latest_price=latest_price,
             bias=bias,
             decision_state=decision_state,
             active_signal=active_signal,
             closest=closest,
             primary_lines=primary_lines,
-            structure_projection_time=structure_projection_time,
             signals=signals,
+            learning_profile=learning_profile,
+            market_context=market_context,
             now_ct=now_ct,
-        )
-
-        render_live_command_center(
-            bias,
-            decision_state,
-            active_signal,
-            strikes,
-            option_state,
-            latest_price,
-            morning_bundle.options_intelligence,
+            structure_projection_time=structure_projection_time,
         )
         if option_state:
             if option_state.entry_target_projection:
