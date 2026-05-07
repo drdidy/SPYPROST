@@ -8327,25 +8327,6 @@ def render_daily_brief_tab(bundle: MorningBriefingBundle) -> None:
     with st.expander("Detailed SPY Foresight Inputs", expanded=False):
         render_structure_scenario_board(active_bundle, result, "Scenario Details")
         render_order_flow_board(active_bundle.options_intelligence)
-    with st.expander("Poster Export", expanded=False):
-        svg = render_daily_brief_svg(active_bundle, result)
-        png_bytes = render_daily_brief_png_bytes(active_bundle, result)
-        pdf_bytes = render_daily_brief_pdf_bytes(png_bytes)
-        d1, d2, d3 = st.columns(3)
-        d1.download_button("Download SVG", data=svg.encode("utf-8"), file_name=_daily_brief_filename(active_bundle, "svg"), mime="image/svg+xml", use_container_width=True)
-        if png_bytes:
-            d2.download_button("Download PNG", data=png_bytes, file_name=_daily_brief_filename(active_bundle, "png"), mime="image/png", use_container_width=True)
-        else:
-            d2.button("Download PNG", disabled=True, use_container_width=True)
-        if pdf_bytes:
-            d3.download_button("Download PDF", data=pdf_bytes, file_name=_daily_brief_filename(active_bundle, "pdf"), mime="application/pdf", use_container_width=True)
-        else:
-            d3.button("Download PDF", disabled=True, use_container_width=True)
-        components.html(
-            f"<div style='width:100%;box-sizing:border-box;display:flex;justify-content:center;background:#020713;padding:12px;border-radius:12px;overflow-x:hidden'>{svg}</div>",
-            height=1280,
-            scrolling=True,
-        )
 
 
 def render_morning_briefing_tab(bundle: MorningBriefingBundle) -> None:
@@ -10613,7 +10594,14 @@ def main() -> None:
                 ])
 
     if _ds_selected_page == "Order Flow":
-        render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
+        if not _ds_uw_token:
+            render_empty_state(
+                "Order Flow unavailable",
+                "Configure your Unusual Whales API key in Settings → Configuration to enable real-time options flow ingest.",
+                "Add UNUSUAL_WHALES_TOKEN to Streamlit secrets, then reboot the app.",
+            )
+        else:
+            render_order_flow_board(morning_bundle.options_intelligence)
 
     if _ds_selected_page == "SPY Foresight":
         if not session_has_candles:
@@ -10679,7 +10667,14 @@ def main() -> None:
 
     if _ds_selected_page == "Options Cockpit":
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
-        if not session_has_candles:
+        _ds_atm_fallback_used = False
+        if not strikes and latest_price is not None and not pd.isna(latest_price):
+            try:
+                strikes = select_0dte_strikes(float(latest_price), now_ct)
+                _ds_atm_fallback_used = True
+            except Exception:
+                strikes = None
+        if not session_has_candles and not strikes:
             render_data_notice("Preview mode: option setup activates after the selected session prints candles.", tone="warn")
             render_empty_state(
                 "Options cockpit pending",
@@ -10687,6 +10682,8 @@ def main() -> None:
                 "Use SPY Foresight and the structure map for pre-session planning.",
             )
         elif strikes:
+            if _ds_atm_fallback_used:
+                render_data_notice("No active rejection signal — showing at-the-money preview chain. Live entries activate when a structure rejection confirms.")
             state = option_state or build_options_cockpit_state_with_fallback(strikes, latest_signal=active_signal, decision_state=decision_state, provider=option_provider, current_dt=now_ct, all_lines=primary_lines+secondary_lines if primary_lines else [], projection_time=get_default_projection_time(now_ct))
             render_status_strip([
                 ("Provider", display_state_label(option_provider_label(state, provider_status))),
