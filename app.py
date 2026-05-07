@@ -9835,12 +9835,36 @@ def main() -> None:
     _ds_clock_text = real_now_ct.strftime("%I:%M:%S %p CT").lstrip("0")
     _design_system_render_header("SPY Prophet", _ds_pill_label, _ds_pill_state, clock_text=_ds_clock_text)
 
-    tab_names = ["Live", "SPY Foresight", "Daily Brief", "Market", "Chart", "Replay", "Options", "Journal"]
+    _ds_nav_groups = [
+        ("ANALYSIS",     [("Live", "L"), ("Chart", "C"), ("Replay", "R")]),
+        ("EXECUTION",    [("Options", "O")]),
+        ("INTELLIGENCE", [("SPY Foresight", "F"), ("Daily Brief", "D"), ("Market", "M")]),
+        ("JOURNAL",      [("Journal", "J")]),
+    ]
     if show_debug:
-        tab_names += ["Structure Details", "Signal Details", "Diagnostics"]
-    tabs = dict(zip(tab_names, st.tabs(tab_names)))
+        _ds_nav_groups.append(("DIAGNOSTICS", [("Structure Details", "S"), ("Signal Details", "G"), ("Diagnostics", "X")]))
 
-    with tabs["Live"]:
+    _ds_all_pages = [name for _, items in _ds_nav_groups for name, _ in items]
+    if "ds_active_page" not in st.session_state or st.session_state["ds_active_page"] not in _ds_all_pages:
+        st.session_state["ds_active_page"] = "Live"
+
+    st.sidebar.markdown('<div class="ds-nav-wrap">', unsafe_allow_html=True)
+    for group_label, items in _ds_nav_groups:
+        st.sidebar.markdown(f'<div class="ds-nav-group">{group_label}</div>', unsafe_allow_html=True)
+        for page_name, glyph in items:
+            is_active = (st.session_state["ds_active_page"] == page_name)
+            if st.sidebar.button(
+                f"{glyph}   {page_name}",
+                key=f"ds_nav_{page_name}",
+                use_container_width=True,
+                type=("primary" if is_active else "secondary"),
+            ):
+                st.session_state["ds_active_page"] = page_name
+                st.rerun()
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+    _ds_selected_page = st.session_state["ds_active_page"]
+
+    if _ds_selected_page == "Live":
         if not session_has_candles:
             render_data_notice(f"Next-session plan for {selected_session_day}. Structure is projected from the latest completed market data; live entries and option contracts remain unavailable until that session prints candles.", tone="warn")
         elif not is_live_session:
@@ -9875,18 +9899,18 @@ def main() -> None:
                     ("Est. P/L", fmt_price(option_state.entry_target_projection.estimated_profit_per_contract)),
                 ])
 
-    with tabs["Market"]:
+    if _ds_selected_page == "Market":
         render_market_context_tab(learning_profile, news_items, economic_events, market_context, latest_price, closest, structure_projection_time)
 
-    with tabs["SPY Foresight"]:
+    if _ds_selected_page == "SPY Foresight":
         if not session_has_candles:
             render_data_notice("Preview mode: SPY Foresight is informational until session candles print. Live contracts remain unavailable.", tone="warn")
         render_morning_briefing_tab(morning_bundle)
 
-    with tabs["Daily Brief"]:
+    if _ds_selected_page == "Daily Brief":
         render_daily_brief_tab(morning_bundle)
 
-    with tabs["Chart"]:
+    if _ds_selected_page == "Chart":
         render_section_title("Prophet Chart", "Trigger map and candles")
         chart_df = chart_session_df if not chart_session_df.empty else (ext_df if not ext_df.empty else signal_rth_df if not signal_rth_df.empty else rth_df if not rth_df.empty else df)
         render_chart_brief(latest_price, closest, active_signal, decision_state, pd.Timestamp(now_ct))
@@ -9908,7 +9932,7 @@ def main() -> None:
         except Exception as e:
             render_warning_panel(f"Chart build failed: {e}")
 
-    with tabs["Replay"]:
+    if _ds_selected_page == "Replay":
         render_section_title("Replay Lab", "Review entries without look-ahead")
         dates = get_available_replay_dates(df)
         if not dates:
@@ -9945,7 +9969,7 @@ def main() -> None:
             if table:
                 st.caption((f"As of {fmt_time(rtime)}," if mode=="Step Replay" and rtime is not None else "For the full replay day,") + f" prior-day structure from {rs.prior_trading_day} produced {len(table)} signals.")
 
-    with tabs["Options"]:
+    if _ds_selected_page == "Options":
         render_section_title("Options Cockpit", "Contract, spread, delta, projected target")
         if not session_has_candles:
             render_data_notice("Preview mode: option setup activates after the selected session prints candles.", tone="warn")
@@ -10003,7 +10027,7 @@ def main() -> None:
         else:
             render_data_notice("No options setup is active. Contract selection appears only after a confirmed or pending structure rejection.")
 
-    with tabs["Journal"]:
+    if _ds_selected_page == "Journal":
         render_section_title("Journal Analytics", "Signal outcome history")
         journal_path='data/signal_journal.json'
         entries = load_signal_journal(journal_path)
@@ -10068,7 +10092,7 @@ def main() -> None:
             for ins in generate_journal_insights(a): render_data_notice(ins)
 
     if show_debug:
-        with tabs["Structure Details"]:
+        if _ds_selected_page == "Structure Details":
             st.caption("Structure validation table for candle inputs and calculated trigger levels.")
             render_section_title("Structure Details", "Pivot source and calculated trigger levels")
             if not proj_df.empty:
@@ -10083,7 +10107,7 @@ def main() -> None:
             else:
                 render_data_notice("No projected structure available yet.", tone="info")
 
-        with tabs["Signal Details"]:
+        if _ds_selected_page == "Signal Details":
             st.caption("Signal quality diagnostics for checking rejection quality.")
             render_section_title("Signal Details", "Hourly rejection diagnostics")
             render_signal_card(active_signal)
@@ -10119,7 +10143,7 @@ def main() -> None:
             else:
                 render_data_notice("No current-session rejection signals.", tone="info")
 
-        with tabs["Diagnostics"]:
+        if _ds_selected_page == "Diagnostics":
             st.caption("Operational diagnostics for current session state.")
             render_debug_json("Primary lines", redact_structure_calibration([asdict(x) for x in primary_lines]))
             st.dataframe(df.tail(20) if not df.empty else pd.DataFrame())
